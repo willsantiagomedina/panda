@@ -1,0 +1,917 @@
+const std = @import("std");
+const ax = @import("ax.zig");
+const layout = @import("layout.zig");
+const state = @import("state.zig");
+
+const log = std.log.scoped(.events);
+
+const focus_poll_interval_seconds = 0.08;
+const fallback_snapshot_poll_interval_seconds = 0.75;
+const observer_backstop_snapshot_poll_interval_seconds = 0.20;
+const control_poll_interval_seconds = 0.02;
+const immediate_relayout_delay_seconds = 0.01;
+const burst_relayout_delay_seconds = 0.04;
+const burst_window_seconds = 0.12;
+const min_relayout_interval_seconds = 0.03;
+const self_event_suppression_window_seconds = 0.20;
+const swap_double_tap_window_seconds = 0.35;
+const max_command_length = 128;
+
+pub const CommandError = error{
+    DaemonUnavailable,
+    InvalidCommand,
+};
+
+pub fn controlSocketPath(allocator: std.mem.Allocator) ![]u8 {
+    return std.fmt.allocPrint(allocator, "/tmp/panda-{d}.sock", .{std.posix.getuid()});
+}
+
+pub fn sendControlCommand(allocator: std.mem.Allocator, command: []const u8) ![]u8 {
+    const socket_path = try controlSocketPath(allocator);
+    defer allocator.free(socket_path);
+
+    var stream = std.net.connectUnixSocket(socket_path) catch return CommandError.DaemonUnavailable;
+    defer stream.close();
+
+    _ = try std.posix.write(stream.handle, command);
+    _ = try std.posix.write(stream.handle, "\n");
+
+    var response = std.ArrayList(u8){};
+    defer response.deinit(allocator);
+
+    var buffer: [256]u8 = undefined;
+    while (true) {
+        const read = stream.read(&buffer) catch |err| switch (err) {
+            error.WouldBlock => break,
+            else => return err,
+        };
+        if (read == 0) break;
+        try response.appendSlice(allocator, buffer[0..read]);
+    }
+
+    if (response.items.len == 0) {
+        return allocator.dupe(u8, "daemon did not respond\n");
+    }
+
+    return response.toOwnedSlice(allocator);
+}
+
+pub const EventLoop = struct {
+    allocator: std.mem.Allocator,
+    options: Options = .{},
+    run_loop: ?ax.c.CFRunLoopRef = null,
+    focus_timer: ?ax.c.CFRunLoopTimerRef = null,
+    relayout_timer: ?ax.c.CFRunLoopTimerRef = null,
+    command_timer: ?ax.c.CFRunLoopTimerRef = null,
+    current_pid: ?i32 = null,
+    current_observer: ?ax.c.AXObserverRef = null,
+    current_app: ?ax.c.AXUIElementRef = null,
+    current_space: ?state.SpaceState = null,
+    current_layout: std.ArrayList(layout.Placement) = .empty,
+    current_screen: state.Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+    focused_window_id: ?u64 = null,
+    previous_focused_window_id: ?u64 = null,
+    last_navigation: ?NavigationRecord = null,
+    last_snapshot: WindowSnapshot = .{},
+    notifications_enabled: bool = false,
+    relayout_pending: bool = false,
+    border_enabled: bool = true,
+    control_socket_fd: ?std.posix.socket_t = null,
+    control_socket_path: ?[]u8 = null,
+    order_overrides: std.AutoHashMap(i32, []u64),
+    last_snapshot_poll_at: f64 = 0,
+    last_observed_change_at: f64 = 0,
+    last_relayout_at: f64 = 0,
+
+    pub const Options = struct {
+        scope: state.SpaceState.WindowScope = .focused_app,
+        layout_options: layout.LayoutOptions = .{},
+        border_enabled: bool = true,
+    };
+
+    pub fn init(allocator: std.mem.Allocator, options: Options) EventLoop {
+        return .{
+            .allocator = allocator,
+            .options = options,
+            .border_enabled = options.border_enabled,
+            .order_overrides = std.AutoHashMap(i32, []u64).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *EventLoop) void {
+        self.clearCurrentSpace();
+        self.current_layout.deinit(self.allocator);
+        self.freeOrderOverrides();
+
+        ax.c.pandaClearBorders();
+
+        if (self.command_timer) |timer| {
+            self.removeTimer(timer);
+            self.command_timer = null;
+        }
+        if (self.focus_timer) |timer| {
+            self.removeTimer(timer);
+            self.focus_timer = null;
+        }
+        if (self.relayout_timer) |timer| {
+            self.removeTimer(timer);
+            self.relayout_timer = null;
+        }
+
+        self.teardownObserver();
+        self.teardownControlSocket();
+    }
+
+    pub fn run(self: *EventLoop) !void {
+        log.info("starting panda daemon event loop", .{});
+
+        ax.c.pandaEnsureAppKitReady();
+
+        self.run_loop = ax.c.CFRunLoopGetCurrent();
+        try self.installFocusTimer();
+        try self.installRelayoutTimer();
+        try self.installCommandTimer();
+        try self.setupControlSocket();
+        try self.reconcileFocusedApp();
+
+        ax.c.CFRunLoopRun();
+    }
+
+    fn installFocusTimer(self: *EventLoop) !void {
+        self.focus_timer = try self.createTimer(
+            focus_poll_interval_seconds,
+            focus_poll_interval_seconds,
+            focusTimerCallback,
+        );
+    }
+
+    fn installRelayoutTimer(self: *EventLoop) !void {
+        self.relayout_timer = try self.createTimer(
+            60.0 * 60.0 * 24.0 * 365.0,
+            0,
+            relayoutTimerCallback,
+        );
+    }
+
+    fn installCommandTimer(self: *EventLoop) !void {
+        self.command_timer = try self.createTimer(
+            control_poll_interval_seconds,
+            control_poll_interval_seconds,
+            commandTimerCallback,
+        );
+    }
+
+    fn createTimer(
+        self: *EventLoop,
+        start_after_seconds: f64,
+        interval_seconds: f64,
+        callback: ax.c.CFRunLoopTimerCallBack,
+    ) !ax.c.CFRunLoopTimerRef {
+        const context = ax.c.CFRunLoopTimerContext{
+            .version = 0,
+            .info = self,
+            .retain = null,
+            .release = null,
+            .copyDescription = null,
+        };
+
+        const timer = ax.c.CFRunLoopTimerCreate(
+            ax.c.kCFAllocatorDefault,
+            ax.c.CFAbsoluteTimeGetCurrent() + start_after_seconds,
+            interval_seconds,
+            0,
+            0,
+            callback,
+            @constCast(&context),
+        ) orelse return error.UnexpectedAxError;
+
+        ax.c.CFRunLoopAddTimer(self.run_loop.?, timer, ax.c.kCFRunLoopDefaultMode);
+        return timer;
+    }
+
+    fn removeTimer(self: *EventLoop, timer: ax.c.CFRunLoopTimerRef) void {
+        if (self.run_loop) |run_loop| {
+            ax.c.CFRunLoopRemoveTimer(run_loop, timer, ax.c.kCFRunLoopDefaultMode);
+        }
+        ax.c.CFRunLoopTimerInvalidate(timer);
+        ax.c.CFRelease(timer);
+    }
+
+    fn reconcileFocusedApp(self: *EventLoop) !void {
+        const pid = ax.focusedApplicationPid() catch |err| switch (err) {
+            error.AccessibilityDenied => return err,
+            error.AppNotFound,
+            error.AppUnresponsive,
+            error.InvalidPid,
+            error.UnsupportedTarget,
+            error.UnexpectedAxError,
+            => {
+                self.resetCurrentApp();
+                return;
+            },
+            else => return err,
+        };
+
+        if (self.current_pid == null or self.current_pid.? != pid) {
+            try self.attachToPid(pid);
+            try self.logFocusChange(pid);
+            try self.relayoutPid(pid);
+            return;
+        }
+
+        self.syncFocusedWindowState(pid);
+
+        const snapshot_poll_interval: f64 = if (!self.notifications_enabled or
+            self.options.scope == .all_apps_main_display)
+            fallback_snapshot_poll_interval_seconds
+        else
+            observer_backstop_snapshot_poll_interval_seconds;
+
+        const now = ax.c.CFAbsoluteTimeGetCurrent();
+        if ((now - self.last_snapshot_poll_at) >= snapshot_poll_interval) {
+            self.last_snapshot_poll_at = now;
+            try self.refreshSnapshotIfNeeded(pid);
+        }
+    }
+
+    fn attachToPid(self: *EventLoop, pid: i32) !void {
+        self.teardownObserver();
+        self.focused_window_id = null;
+        self.previous_focused_window_id = null;
+        self.last_navigation = null;
+
+        const app = try ax.createApplication(pid);
+        errdefer ax.c.CFRelease(app);
+
+        const observer = ax.createObserver(pid, notificationCallback) catch |err| switch (err) {
+            error.UnsupportedTarget,
+            error.InvalidPid,
+            => {
+                self.current_pid = pid;
+                self.current_app = app;
+                self.current_observer = null;
+                self.notifications_enabled = false;
+                self.relayout_pending = false;
+                self.last_snapshot = .{};
+                self.last_snapshot_poll_at = 0;
+                self.last_observed_change_at = 0;
+                return;
+            },
+            else => return err,
+        };
+        errdefer ax.c.CFRelease(observer);
+
+        const source = ax.c.AXObserverGetRunLoopSource(observer);
+        ax.c.CFRunLoopAddSource(self.run_loop.?, source, ax.c.kCFRunLoopDefaultMode);
+
+        self.current_pid = pid;
+        self.current_app = app;
+        self.current_observer = observer;
+        self.notifications_enabled = false;
+
+        var registered_any = false;
+        inline for ([_][]const u8{
+            "AXWindowCreated",
+            "AXUIElementDestroyed",
+            "AXMoved",
+            "AXResized",
+            "AXMainWindowChanged",
+            "AXFocusedWindowChanged",
+        }) |notification_name| {
+            if (registerNotification(observer, app, notification_name, self)) {
+                registered_any = true;
+            }
+        }
+
+        self.notifications_enabled = registered_any;
+        self.relayout_pending = false;
+        self.last_snapshot = .{};
+        self.last_snapshot_poll_at = 0;
+        self.last_observed_change_at = 0;
+    }
+
+    fn refreshSnapshotIfNeeded(self: *EventLoop, pid: i32) !void {
+        const snapshot = self.captureSnapshot(pid) catch |err| switch (err) {
+            error.AppUnresponsive,
+            error.AttributeUnsupported,
+            error.InvalidPid,
+            error.UnsupportedTarget,
+            error.UnexpectedAxError,
+            => return,
+            else => return err,
+        };
+
+        if (!snapshot.eql(self.last_snapshot)) {
+            try self.relayoutPid(pid);
+        }
+    }
+
+    fn relayoutPid(self: *EventLoop, pid: i32) !void {
+        var space = state.SpaceState.init(self.allocator);
+        errdefer space.deinit();
+
+        const screen_bounds = ax.mainDisplayVisibleFrame();
+        const screen = state.Rect{
+            .x = screen_bounds.x,
+            .y = screen_bounds.y,
+            .width = screen_bounds.width,
+            .height = screen_bounds.height,
+        };
+
+        space.loadWindowsForScope(self.options.scope, pid, screen) catch |err| switch (err) {
+            error.AppUnresponsive,
+            error.AttributeUnsupported,
+            error.InvalidPid,
+            error.UnsupportedTarget,
+            error.UnexpectedAxError,
+            => {
+                self.last_snapshot = .{};
+                self.clearCurrentSpace();
+                self.current_layout.clearRetainingCapacity();
+                self.syncBorders();
+                return;
+            },
+            else => return err,
+        };
+
+        if (space.window_order.items.len == 0) {
+            self.last_snapshot = .{};
+            self.clearCurrentSpace();
+            self.current_layout.clearRetainingCapacity();
+            self.syncBorders();
+            return;
+        }
+
+        if (self.order_overrides.get(pid)) |override| {
+            try space.applyOrderOverride(override);
+        } else if (self.current_pid == pid) {
+            if (self.current_space) |*current| {
+                try space.applyOrderOverride(current.window_order.items);
+            }
+        }
+
+        const placements = try layout.computePlacements(self.allocator, &space, screen, self.options.layout_options);
+        defer self.allocator.free(placements);
+
+        layout.applyPlacements(&space, placements) catch |err| switch (err) {
+            error.AppUnresponsive,
+            error.AttributeUnsupported,
+            error.InvalidPid,
+            error.UnsupportedTarget,
+            error.UnexpectedAxError,
+            error.ConversionFailed,
+            => return,
+            else => return err,
+        };
+
+        try self.replaceCurrentSpace(space, screen, placements);
+        self.last_snapshot = snapshotForWindowIds(self.current_space.?.window_order.items);
+        self.last_relayout_at = ax.c.CFAbsoluteTimeGetCurrent();
+        self.syncFocusedWindowState(pid);
+    }
+
+    fn replaceCurrentSpace(
+        self: *EventLoop,
+        new_space: state.SpaceState,
+        screen: state.Rect,
+        placements: []const layout.Placement,
+    ) !void {
+        self.clearCurrentSpace();
+        self.current_space = new_space;
+        self.current_screen = screen;
+        self.current_layout.clearRetainingCapacity();
+        try self.current_layout.appendSlice(self.allocator, placements);
+        self.syncBorders();
+    }
+
+    fn clearCurrentSpace(self: *EventLoop) void {
+        if (self.current_space) |*space| {
+            space.deinit();
+            self.current_space = null;
+        }
+    }
+
+    fn handleObservedChange(self: *EventLoop, kind: NotificationKind) void {
+        const now = ax.c.CFAbsoluteTimeGetCurrent();
+        if (kind != .focus and (now - self.last_relayout_at) <= self_event_suppression_window_seconds) {
+            return;
+        }
+
+        if (kind == .focus) {
+            if (self.current_pid) |pid| self.syncFocusedWindowState(pid);
+            return;
+        }
+
+        const since_last_relayout = now - self.last_relayout_at;
+        const since_last_event = now - self.last_observed_change_at;
+        self.last_observed_change_at = now;
+
+        const delay: f64 = if (self.relayout_pending or
+            since_last_event <= burst_window_seconds or
+            since_last_relayout < min_relayout_interval_seconds)
+            burst_relayout_delay_seconds
+        else
+            immediate_relayout_delay_seconds;
+
+        self.scheduleRelayout(delay);
+    }
+
+    fn scheduleRelayout(self: *EventLoop, delay_seconds: f64) void {
+        const timer = self.relayout_timer orelse return;
+        self.relayout_pending = true;
+        ax.c.CFRunLoopTimerSetNextFireDate(timer, ax.c.CFAbsoluteTimeGetCurrent() + delay_seconds);
+    }
+
+    fn flushScheduledRelayout(self: *EventLoop) void {
+        if (!self.relayout_pending) return;
+        self.relayout_pending = false;
+
+        const pid = self.current_pid orelse return;
+        self.relayoutPid(pid) catch |err| switch (err) {
+            error.AppUnresponsive,
+            error.AttributeUnsupported,
+            error.InvalidPid,
+            error.UnsupportedTarget,
+            error.UnexpectedAxError,
+            => return,
+            else => log.err("relayout failed: {s}", .{@errorName(err)}),
+        };
+    }
+
+    fn syncFocusedWindowState(self: *EventLoop, pid: i32) void {
+        const maybe_id = ax.focusedWindowId(pid) catch return;
+        const focused_id = maybe_id orelse return;
+        if (!self.hasPlacement(focused_id)) return;
+        if (self.focused_window_id != null and self.focused_window_id.? != focused_id) {
+            self.previous_focused_window_id = self.focused_window_id;
+        }
+        self.focused_window_id = focused_id;
+    }
+
+    fn hasPlacement(self: *const EventLoop, window_id: u64) bool {
+        for (self.current_layout.items) |placement| {
+            if (placement.window_id == window_id) return true;
+        }
+        return false;
+    }
+
+    fn captureSnapshot(self: *EventLoop, pid: i32) !WindowSnapshot {
+        var space = state.SpaceState.init(self.allocator);
+        defer space.deinit();
+
+        const screen_bounds = ax.mainDisplayVisibleFrame();
+        const screen = state.Rect{
+            .x = screen_bounds.x,
+            .y = screen_bounds.y,
+            .width = screen_bounds.width,
+            .height = screen_bounds.height,
+        };
+
+        try space.loadWindowsForScope(self.options.scope, pid, screen);
+        return snapshotForWindowIds(space.window_order.items);
+    }
+
+    fn setupControlSocket(self: *EventLoop) !void {
+        const socket_path = try controlSocketPath(self.allocator);
+        errdefer self.allocator.free(socket_path);
+
+        std.fs.deleteFileAbsolute(socket_path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+
+        const listener = try std.posix.socket(
+            std.posix.AF.UNIX,
+            std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC | std.posix.SOCK.NONBLOCK,
+            0,
+        );
+        errdefer std.posix.close(listener);
+
+        var address = try std.net.Address.initUnix(socket_path);
+        try std.posix.bind(listener, &address.any, address.getOsSockLen());
+        try std.posix.listen(listener, 8);
+
+        self.control_socket_fd = listener;
+        self.control_socket_path = socket_path;
+    }
+
+    fn teardownControlSocket(self: *EventLoop) void {
+        if (self.control_socket_fd) |fd| {
+            std.posix.close(fd);
+            self.control_socket_fd = null;
+        }
+        if (self.control_socket_path) |path| {
+            std.fs.deleteFileAbsolute(path) catch {};
+            self.allocator.free(path);
+            self.control_socket_path = null;
+        }
+    }
+
+    fn pollControlSocket(self: *EventLoop) void {
+        const listener = self.control_socket_fd orelse return;
+
+        while (true) {
+            const client = std.posix.accept(listener, null, null, std.posix.SOCK.CLOEXEC | std.posix.SOCK.NONBLOCK) catch |err| switch (err) {
+                error.WouldBlock => return,
+                else => {
+                    log.err("control accept failed: {s}", .{@errorName(err)});
+                    return;
+                },
+            };
+            self.handleClient(client);
+        }
+    }
+
+    fn handleClient(self: *EventLoop, client: std.posix.socket_t) void {
+        defer std.posix.close(client);
+
+        var buffer: [max_command_length]u8 = undefined;
+        const read = std.posix.read(client, &buffer) catch |err| switch (err) {
+            error.WouldBlock => return,
+            else => {
+                _ = std.posix.write(client, "error: failed to read command\n") catch {};
+                log.err("control read failed: {s}", .{@errorName(err)});
+                return;
+            },
+        };
+        if (read == 0) return;
+
+        const raw = std.mem.trim(u8, buffer[0..read], " \t\r\n");
+        if (raw.len == 0) return;
+
+        const response = self.executeControlCommand(raw) catch |err| switch (err) {
+            CommandError.InvalidCommand => "error: invalid command\n",
+            else => "error: command failed\n",
+        };
+        _ = std.posix.write(client, response) catch {};
+    }
+
+    fn executeControlCommand(self: *EventLoop, raw: []const u8) ![]const u8 {
+        var parts = std.mem.tokenizeScalar(u8, raw, ' ');
+        const verb = parts.next() orelse return CommandError.InvalidCommand;
+
+        if (std.mem.eql(u8, verb, "focus")) {
+            const direction = parseDirection(parts.next() orelse return CommandError.InvalidCommand) orelse return CommandError.InvalidCommand;
+            try self.focusDirection(direction, false);
+            return "ok\n";
+        }
+
+        if (std.mem.eql(u8, verb, "swap")) {
+            const direction = parseDirection(parts.next() orelse return CommandError.InvalidCommand) orelse return CommandError.InvalidCommand;
+            try self.swapDirection(direction);
+            return "ok\n";
+        }
+
+        if (std.mem.eql(u8, verb, "border")) {
+            const mode = parts.next() orelse return CommandError.InvalidCommand;
+            if (std.mem.eql(u8, mode, "on")) {
+                self.border_enabled = true;
+                ax.c.pandaSetBordersVisible(true);
+                self.syncBorders();
+                return "borders: on\n";
+            }
+            if (std.mem.eql(u8, mode, "off")) {
+                self.border_enabled = false;
+                ax.c.pandaSetBordersVisible(false);
+                return "borders: off\n";
+            }
+            if (std.mem.eql(u8, mode, "toggle")) {
+                self.border_enabled = !self.border_enabled;
+                ax.c.pandaSetBordersVisible(self.border_enabled);
+                if (self.border_enabled) self.syncBorders();
+                return if (self.border_enabled) "borders: on\n" else "borders: off\n";
+            }
+            if (std.mem.eql(u8, mode, "status")) {
+                return if (self.border_enabled) "borders: on\n" else "borders: off\n";
+            }
+            return CommandError.InvalidCommand;
+        }
+
+        return CommandError.InvalidCommand;
+    }
+
+    fn focusDirection(self: *EventLoop, direction: ax.Direction, arm_swap: bool) !void {
+        const source_id = self.focused_window_id orelse self.current_layout.items[0].window_id;
+        const target_id = self.findDirectionalNeighbor(source_id, direction) orelse return;
+        if (target_id == source_id) return;
+
+        try self.focusManagedWindow(target_id);
+
+        self.previous_focused_window_id = source_id;
+        self.focused_window_id = target_id;
+        self.last_navigation = .{
+            .from = source_id,
+            .to = target_id,
+            .direction = direction,
+            .at = ax.c.CFAbsoluteTimeGetCurrent(),
+            .armed_by_swap = arm_swap,
+        };
+    }
+
+    fn swapDirection(self: *EventLoop, direction: ax.Direction) !void {
+        const pid = self.current_pid orelse return;
+        const focused_id = self.focused_window_id orelse if (self.current_layout.items.len != 0)
+            self.current_layout.items[0].window_id
+        else
+            return;
+
+        if (self.last_navigation) |navigation| {
+            const now = ax.c.CFAbsoluteTimeGetCurrent();
+            if (navigation.armed_by_swap and
+                navigation.direction == direction and
+                navigation.to == focused_id and
+                (now - navigation.at) <= swap_double_tap_window_seconds)
+            {
+                try self.swapWindowOrder(pid, navigation.from, navigation.to);
+                self.last_navigation = null;
+                try self.relayoutPid(pid);
+                try self.focusManagedWindow(navigation.to);
+                self.focused_window_id = navigation.to;
+                self.previous_focused_window_id = navigation.from;
+                return;
+            }
+        }
+
+        try self.focusDirection(direction, true);
+    }
+
+    fn swapWindowOrder(self: *EventLoop, pid: i32, first: u64, second: u64) !void {
+        const current = self.current_space orelse return;
+        var reordered = try self.allocator.dupe(u64, current.window_order.items);
+        errdefer self.allocator.free(reordered);
+
+        const first_index = indexOfWindowId(reordered, first) orelse return;
+        const second_index = indexOfWindowId(reordered, second) orelse return;
+        std.mem.swap(u64, &reordered[first_index], &reordered[second_index]);
+
+        if (self.order_overrides.fetchRemove(pid)) |entry| {
+            self.allocator.free(entry.value);
+        }
+        try self.order_overrides.put(pid, reordered);
+    }
+
+    fn focusManagedWindow(self: *EventLoop, window_id: u64) !void {
+        const current = self.current_space orelse return;
+        const window = current.windows.get(window_id) orelse return;
+        try ax.focusWindow(window.element);
+    }
+
+    fn findDirectionalNeighbor(self: *const EventLoop, source_id: u64, direction: ax.Direction) ?u64 {
+        const source = placementForWindow(self.current_layout.items, source_id) orelse return null;
+        const source_center = rectCenter(source.frame);
+
+        var best_id: ?u64 = null;
+        var best_overlap: f64 = -1;
+        var best_primary = std.math.inf(f64);
+        var best_secondary = std.math.inf(f64);
+
+        for (self.current_layout.items) |candidate| {
+            if (candidate.window_id == source_id) continue;
+
+            const candidate_center = rectCenter(candidate.frame);
+            const delta_x = candidate_center.x - source_center.x;
+            const delta_y = candidate_center.y - source_center.y;
+
+            const primary: f64 = switch (direction) {
+                .left => if (delta_x < -1) -delta_x else continue,
+                .right => if (delta_x > 1) delta_x else continue,
+                .up => if (delta_y < -1) -delta_y else continue,
+                .down => if (delta_y > 1) delta_y else continue,
+            };
+
+            const secondary = switch (direction) {
+                .left, .right => @abs(delta_y),
+                .up, .down => @abs(delta_x),
+            };
+
+            const overlap = switch (direction) {
+                .left, .right => intervalOverlap(source.frame.y, source.frame.y + source.frame.height, candidate.frame.y, candidate.frame.y + candidate.frame.height),
+                .up, .down => intervalOverlap(source.frame.x, source.frame.x + source.frame.width, candidate.frame.x, candidate.frame.x + candidate.frame.width),
+            };
+
+            if (overlap > best_overlap + 0.5 or
+                (almostEqual(overlap, best_overlap) and primary < best_primary - 0.5) or
+                (almostEqual(overlap, best_overlap) and almostEqual(primary, best_primary) and secondary < best_secondary))
+            {
+                best_id = candidate.window_id;
+                best_overlap = overlap;
+                best_primary = primary;
+                best_secondary = secondary;
+            }
+        }
+
+        return best_id;
+    }
+
+    fn syncBorders(self: *EventLoop) void {
+        if (!self.border_enabled) {
+            ax.c.pandaSetBordersVisible(false);
+            return;
+        }
+
+        if (self.current_layout.items.len == 0) {
+            ax.c.pandaClearBorders();
+            return;
+        }
+
+        var frames = self.allocator.alloc(ax.c.PandaBorderFrame, self.current_layout.items.len) catch return;
+        defer self.allocator.free(frames);
+
+        for (self.current_layout.items, 0..) |placement, index| {
+            frames[index] = .{
+                .window_id = @intCast(placement.window_id),
+                .is_active = self.focused_window_id != null and placement.window_id == self.focused_window_id.?,
+            };
+        }
+
+        ax.c.pandaSetBordersVisible(true);
+        ax.c.pandaSyncBorders(frames.ptr, @intCast(frames.len));
+    }
+
+    fn resetCurrentApp(self: *EventLoop) void {
+        self.teardownObserver();
+        self.current_pid = null;
+        self.last_snapshot = .{};
+        self.last_snapshot_poll_at = 0;
+        self.clearCurrentSpace();
+        self.current_layout.clearRetainingCapacity();
+        self.syncBorders();
+    }
+
+    fn teardownObserver(self: *EventLoop) void {
+        if (self.current_observer) |observer| {
+            if (self.run_loop) |run_loop| {
+                const source = ax.c.AXObserverGetRunLoopSource(observer);
+                ax.c.CFRunLoopRemoveSource(run_loop, source, ax.c.kCFRunLoopDefaultMode);
+            }
+            ax.c.CFRelease(observer);
+            self.current_observer = null;
+        }
+
+        if (self.current_app) |app| {
+            ax.c.CFRelease(app);
+            self.current_app = null;
+        }
+
+        self.notifications_enabled = false;
+        self.relayout_pending = false;
+        self.last_observed_change_at = 0;
+    }
+
+    fn freeOrderOverrides(self: *EventLoop) void {
+        var iterator = self.order_overrides.iterator();
+        while (iterator.next()) |entry| {
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.order_overrides.deinit();
+    }
+
+    fn logFocusChange(self: *EventLoop, pid: i32) !void {
+        var app = ax.describeRunningApp(self.allocator, pid) catch |err| switch (err) {
+            error.AppNotFound => {
+                log.info("frontmost app changed to pid {d}", .{pid});
+                return;
+            },
+            else => return err,
+        };
+        defer app.deinit(self.allocator);
+
+        if (self.notifications_enabled) {
+            log.info("frontmost app changed to {s} (pid {d}); observer attached", .{ app.name, pid });
+        } else {
+            log.info("frontmost app changed to {s} (pid {d}); using snapshot fallback", .{ app.name, pid });
+        }
+    }
+};
+
+const NavigationRecord = struct {
+    from: u64,
+    to: u64,
+    direction: ax.Direction,
+    at: f64,
+    armed_by_swap: bool,
+};
+
+const WindowSnapshot = struct {
+    count: usize = 0,
+    digest: u64 = 0,
+
+    fn eql(self: WindowSnapshot, other: WindowSnapshot) bool {
+        return self.count == other.count and self.digest == other.digest;
+    }
+};
+
+const NotificationKind = enum {
+    focus,
+    geometry,
+};
+
+fn focusTimerCallback(_: ax.c.CFRunLoopTimerRef, info: ?*anyopaque) callconv(.c) void {
+    const loop: *EventLoop = @ptrCast(@alignCast(info orelse return));
+    loop.reconcileFocusedApp() catch |err| switch (err) {
+        error.AccessibilityDenied => log.err("accessibility permission was revoked while daemon was running", .{}),
+        else => log.err("focus reconciliation failed: {s}", .{@errorName(err)}),
+    };
+}
+
+fn relayoutTimerCallback(_: ax.c.CFRunLoopTimerRef, info: ?*anyopaque) callconv(.c) void {
+    const loop: *EventLoop = @ptrCast(@alignCast(info orelse return));
+    loop.flushScheduledRelayout();
+}
+
+fn commandTimerCallback(_: ax.c.CFRunLoopTimerRef, info: ?*anyopaque) callconv(.c) void {
+    const loop: *EventLoop = @ptrCast(@alignCast(info orelse return));
+    loop.pollControlSocket();
+}
+
+fn notificationCallback(
+    _: ax.c.AXObserverRef,
+    _: ax.c.AXUIElementRef,
+    notification: ax.c.CFStringRef,
+    refcon: ?*anyopaque,
+) callconv(.c) void {
+    const loop: *EventLoop = @ptrCast(@alignCast(refcon orelse return));
+    const kind: NotificationKind = if (ax.cfStringEquals(notification, "AXFocusedWindowChanged") or
+        ax.cfStringEquals(notification, "AXMainWindowChanged"))
+        .focus
+    else
+        .geometry;
+    loop.handleObservedChange(kind);
+}
+
+fn registerNotification(
+    observer: ax.c.AXObserverRef,
+    app: ax.c.AXUIElementRef,
+    notification_name: []const u8,
+    loop: *EventLoop,
+) bool {
+    ax.addObserverNotification(observer, app, notification_name, loop) catch |err| switch (err) {
+        error.UnsupportedTarget => return false,
+        else => {
+            log.err("failed to register {s}: {s}", .{ notification_name, @errorName(err) });
+            return false;
+        },
+    };
+    return true;
+}
+
+fn parseDirection(raw: []const u8) ?ax.Direction {
+    if (std.mem.eql(u8, raw, "left")) return .left;
+    if (std.mem.eql(u8, raw, "right")) return .right;
+    if (std.mem.eql(u8, raw, "up")) return .up;
+    if (std.mem.eql(u8, raw, "down")) return .down;
+    return null;
+}
+
+fn placementForWindow(placements: []const layout.Placement, window_id: u64) ?layout.Placement {
+    for (placements) |placement| {
+        if (placement.window_id == window_id) return placement;
+    }
+    return null;
+}
+
+fn rectCenter(rect: state.Rect) state.Rect {
+    return .{
+        .x = rect.x + (rect.width / 2.0),
+        .y = rect.y + (rect.height / 2.0),
+        .width = 0,
+        .height = 0,
+    };
+}
+
+fn intervalOverlap(start_a: f64, end_a: f64, start_b: f64, end_b: f64) f64 {
+    return @max(0, @min(end_a, end_b) - @max(start_a, start_b));
+}
+
+fn almostEqual(a: f64, b: f64) bool {
+    return @abs(a - b) < 0.5;
+}
+
+fn indexOfWindowId(ids: []const u64, needle: u64) ?usize {
+    for (ids, 0..) |id, index| {
+        if (id == needle) return index;
+    }
+    return null;
+}
+
+fn snapshotForPlacements(placements: []const layout.Placement) WindowSnapshot {
+    var hasher = std.hash.Wyhash.init(0);
+    for (placements) |placement| {
+        std.hash.autoHash(&hasher, placement.window_id);
+    }
+    return .{
+        .count = placements.len,
+        .digest = hasher.final(),
+    };
+}
+
+fn snapshotForWindowIds(ids: []const u64) WindowSnapshot {
+    var hasher = std.hash.Wyhash.init(0);
+    for (ids) |window_id| {
+        std.hash.autoHash(&hasher, window_id);
+    }
+    return .{
+        .count = ids.len,
+        .digest = hasher.final(),
+    };
+}

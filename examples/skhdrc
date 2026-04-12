@@ -1,0 +1,9 @@
+cmd - left : panda focus left
+cmd - right : panda focus right
+cmd - up : panda focus up
+cmd - down : panda focus down
+
+cmd + shift - left : panda swap left
+cmd + shift - right : panda swap right
+cmd + shift - up : panda swap up
+cmd + shift - down : panda swap down

@@ -1,0 +1,12 @@
+.{
+    .name = .panda,
+    .version = "0.0.0",
+    .fingerprint = 0xc5079ef3abb05079,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
