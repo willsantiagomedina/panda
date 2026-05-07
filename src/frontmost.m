@@ -1,6 +1,7 @@
 #import "frontmost.h"
 
 #import <AppKit/AppKit.h>
+#import <Carbon/Carbon.h>
 #import <QuartzCore/QuartzCore.h>
 #import <string.h>
 #import <unistd.h>
@@ -20,6 +21,74 @@ static NSMutableDictionary<NSNumber *, NSWindow *> *gPandaOverlayWindows;
 static NSMutableDictionary<NSNumber *, CALayer *> *gPandaBorderLayers;
 static NSMutableDictionary<NSNumber *, NSNumber *> *gPandaWindowToScreen;
 static bool gPandaBordersVisible = true;
+
+static NSMutableDictionary<NSNumber *, NSValue *> *gPandaHotkeyRefs;
+static EventHandlerRef gPandaHotkeyHandler = NULL;
+static const int gPandaHotkeyQueueCapacity = 256;
+static uint32_t gPandaHotkeyQueue[256];
+static int gPandaHotkeyQueueRead = 0;
+static int gPandaHotkeyQueueWrite = 0;
+
+static UInt32 PandaToCarbonModifiers(uint32_t modifiers) {
+    UInt32 result = 0;
+    if ((modifiers & PANDA_MOD_COMMAND) != 0) result |= cmdKey;
+    if ((modifiers & PANDA_MOD_CONTROL) != 0) result |= controlKey;
+    if ((modifiers & PANDA_MOD_OPTION) != 0) result |= optionKey;
+    if ((modifiers & PANDA_MOD_SHIFT) != 0) result |= shiftKey;
+    return result;
+}
+
+static CGEventFlags PandaToEventFlags(uint32_t modifiers) {
+    CGEventFlags flags = 0;
+    if ((modifiers & PANDA_MOD_COMMAND) != 0) flags |= kCGEventFlagMaskCommand;
+    if ((modifiers & PANDA_MOD_CONTROL) != 0) flags |= kCGEventFlagMaskControl;
+    if ((modifiers & PANDA_MOD_OPTION) != 0) flags |= kCGEventFlagMaskAlternate;
+    if ((modifiers & PANDA_MOD_SHIFT) != 0) flags |= kCGEventFlagMaskShift;
+    return flags;
+}
+
+static void PandaPushHotkeyEvent(uint32_t hotkey_id) {
+    const int next = (gPandaHotkeyQueueWrite + 1) % gPandaHotkeyQueueCapacity;
+    if (next == gPandaHotkeyQueueRead) {
+        gPandaHotkeyQueueRead = (gPandaHotkeyQueueRead + 1) % gPandaHotkeyQueueCapacity;
+    }
+
+    gPandaHotkeyQueue[gPandaHotkeyQueueWrite] = hotkey_id;
+    gPandaHotkeyQueueWrite = next;
+}
+
+static int PandaDrainHotkeyEvents(uint32_t *out_hotkey_ids, int capacity) {
+    if (out_hotkey_ids == NULL || capacity <= 0) {
+        return 0;
+    }
+
+    int count = 0;
+    while (gPandaHotkeyQueueRead != gPandaHotkeyQueueWrite && count < capacity) {
+        out_hotkey_ids[count] = gPandaHotkeyQueue[gPandaHotkeyQueueRead];
+        gPandaHotkeyQueueRead = (gPandaHotkeyQueueRead + 1) % gPandaHotkeyQueueCapacity;
+        count++;
+    }
+    return count;
+}
+
+static OSStatus PandaHotkeyEventHandler(EventHandlerCallRef next_handler, EventRef event, void *user_data) {
+    (void)next_handler;
+    (void)user_data;
+    EventHotKeyID hotkey = {0};
+    const OSStatus status = GetEventParameter(
+        event,
+        kEventParamDirectObject,
+        typeEventHotKeyID,
+        NULL,
+        sizeof(hotkey),
+        NULL,
+        &hotkey
+    );
+    if (status == noErr) {
+        PandaPushHotkeyEvent(hotkey.id);
+    }
+    return noErr;
+}
 
 static CGFloat PandaIntersectionArea(CGRect lhs, CGRect rhs) {
     CGRect intersection = CGRectIntersection(lhs, rhs);
@@ -577,5 +646,126 @@ void pandaSetBordersVisible(bool visible) {
                 [window orderOut:nil];
             }
         }
+    }
+}
+
+bool pandaPostKeyChord(uint16_t key_code, uint32_t modifiers) {
+    @autoreleasepool {
+        pandaEnsureAppKitReady();
+
+        CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+        if (source == NULL) {
+            return false;
+        }
+
+        CGEventRef key_down = CGEventCreateKeyboardEvent(source, (CGKeyCode)key_code, true);
+        CGEventRef key_up = CGEventCreateKeyboardEvent(source, (CGKeyCode)key_code, false);
+        if (key_down == NULL || key_up == NULL) {
+            if (key_down != NULL) CFRelease(key_down);
+            if (key_up != NULL) CFRelease(key_up);
+            CFRelease(source);
+            return false;
+        }
+
+        const CGEventFlags flags = PandaToEventFlags(modifiers);
+        CGEventSetFlags(key_down, flags);
+        CGEventSetFlags(key_up, flags);
+
+        CGEventPost(kCGHIDEventTap, key_down);
+        CGEventPost(kCGHIDEventTap, key_up);
+
+        CFRelease(key_down);
+        CFRelease(key_up);
+        CFRelease(source);
+        return true;
+    }
+}
+
+void pandaHotkeysInitialize(void) {
+    @autoreleasepool {
+        pandaEnsureAppKitReady();
+
+        if (gPandaHotkeyRefs == nil) {
+            gPandaHotkeyRefs = [[NSMutableDictionary alloc] init];
+        }
+
+        if (gPandaHotkeyHandler == NULL) {
+            EventTypeSpec spec = {
+                .eventClass = kEventClassKeyboard,
+                .eventKind = kEventHotKeyPressed,
+            };
+            InstallEventHandler(
+                GetApplicationEventTarget(),
+                PandaHotkeyEventHandler,
+                1,
+                &spec,
+                NULL,
+                &gPandaHotkeyHandler
+            );
+        }
+    }
+}
+
+bool pandaRegisterHotkey(uint32_t hotkey_id, uint16_t key_code, uint32_t modifiers) {
+    @autoreleasepool {
+        pandaHotkeysInitialize();
+        if (gPandaHotkeyRefs == nil) {
+            return false;
+        }
+
+        NSNumber *key = @(hotkey_id);
+        NSValue *existing = gPandaHotkeyRefs[key];
+        if (existing != nil) {
+            EventHotKeyRef existing_ref = (EventHotKeyRef)existing.pointerValue;
+            if (existing_ref != NULL) {
+                UnregisterEventHotKey(existing_ref);
+            }
+            [gPandaHotkeyRefs removeObjectForKey:key];
+        }
+
+        EventHotKeyRef hotkey_ref = NULL;
+        EventHotKeyID event_hotkey_id = {
+            .signature = 'pnda',
+            .id = hotkey_id,
+        };
+
+        const OSStatus status = RegisterEventHotKey(
+            (UInt32)key_code,
+            PandaToCarbonModifiers(modifiers),
+            event_hotkey_id,
+            GetApplicationEventTarget(),
+            0,
+            &hotkey_ref
+        );
+
+        if (status != noErr || hotkey_ref == NULL) {
+            return false;
+        }
+
+        gPandaHotkeyRefs[key] = [NSValue valueWithPointer:hotkey_ref];
+        return true;
+    }
+}
+
+void pandaClearHotkeys(void) {
+    @autoreleasepool {
+        if (gPandaHotkeyRefs != nil) {
+            for (NSValue *value in gPandaHotkeyRefs.objectEnumerator) {
+                EventHotKeyRef hotkey_ref = (EventHotKeyRef)value.pointerValue;
+                if (hotkey_ref != NULL) {
+                    UnregisterEventHotKey(hotkey_ref);
+                }
+            }
+            [gPandaHotkeyRefs removeAllObjects];
+        }
+
+        gPandaHotkeyQueueRead = 0;
+        gPandaHotkeyQueueWrite = 0;
+    }
+}
+
+int pandaDrainHotkeys(uint32_t *out_hotkey_ids, int capacity) {
+    @autoreleasepool {
+        return PandaDrainHotkeyEvents(out_hotkey_ids, capacity);
     }
 }

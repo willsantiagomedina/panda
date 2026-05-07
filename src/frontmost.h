@@ -2,6 +2,7 @@
 #define PANDA_FRONTMOST_H
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <sys/types.h>
 #include <CoreGraphics/CoreGraphics.h>
 
@@ -29,6 +30,13 @@ typedef struct PandaBorderFrame {
     bool is_active;
 } PandaBorderFrame;
 
+enum {
+    PANDA_MOD_COMMAND = 1u << 0,
+    PANDA_MOD_CONTROL = 1u << 1,
+    PANDA_MOD_OPTION = 1u << 2,
+    PANDA_MOD_SHIFT = 1u << 3,
+};
+
 bool pandaCopyFrontmostApp(PandaFrontmostApp *out_app);
 
 // Get all running GUI applications (via NSWorkspace)
@@ -50,5 +58,14 @@ void pandaSyncBorders(const PandaBorderFrame *frames, int count);
 void pandaClearBorders(void);
 void pandaSetBordersVisible(bool visible);
 pid_t pandaCurrentProcessId(void);
+
+// Keyboard helpers (for desktop switching/moving and daemon hotkeys)
+bool pandaPostKeyChord(uint16_t key_code, uint32_t modifiers);
+
+// Global hotkeys
+void pandaHotkeysInitialize(void);
+bool pandaRegisterHotkey(uint32_t hotkey_id, uint16_t key_code, uint32_t modifiers);
+void pandaClearHotkeys(void);
+int pandaDrainHotkeys(uint32_t *out_hotkey_ids, int capacity);
 
 #endif

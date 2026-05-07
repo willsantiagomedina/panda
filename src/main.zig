@@ -1,5 +1,6 @@
 const std = @import("std");
 const ax = @import("ax.zig");
+const config = @import("config.zig");
 const events = @import("events.zig");
 const layout = @import("layout.zig");
 const state = @import("state.zig");
@@ -44,9 +45,62 @@ pub fn main() !void {
 }
 
 fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) !void {
-    try ax.ensureTrusted();
+    if (std.mem.eql(u8, command, "focus")) {
+        const direction = args.next() orelse return error.InvalidArguments;
+        if (args.next() != null) return error.InvalidArguments;
+
+        try sendDaemonCommand(allocator, try std.fmt.allocPrint(allocator, "focus {s}", .{direction}));
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "swap")) {
+        const direction = args.next() orelse return error.InvalidArguments;
+        if (args.next() != null) return error.InvalidArguments;
+
+        try sendDaemonCommand(allocator, try std.fmt.allocPrint(allocator, "swap {s}", .{direction}));
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "border")) {
+        const mode = args.next() orelse return error.InvalidArguments;
+        if (args.next() != null) return error.InvalidArguments;
+
+        try sendDaemonCommand(allocator, try std.fmt.allocPrint(allocator, "border {s}", .{mode}));
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "desktop")) {
+        const action = args.next() orelse return error.InvalidArguments;
+        if (args.next() != null) return error.InvalidArguments;
+
+        if (!(std.mem.eql(u8, action, "next") or
+            std.mem.eql(u8, action, "prev") or
+            std.mem.eql(u8, action, "move-next") or
+            std.mem.eql(u8, action, "move-prev")))
+        {
+            return error.InvalidArguments;
+        }
+
+        try sendDaemonCommand(allocator, try std.fmt.allocPrint(allocator, "desktop {s}", .{action}));
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "config")) {
+        if (args.next() != null) return error.InvalidArguments;
+
+        var loaded = try config.load(allocator);
+        defer loaded.deinit(allocator);
+
+        std.debug.print("config: {s}\n", .{loaded.path});
+        std.debug.print("status: {s}\n", .{if (loaded.exists) "loaded" else "not found (using defaults)"});
+        return;
+    }
+
+    var loaded_config = try config.load(allocator);
+    defer loaded_config.deinit(allocator);
 
     if (std.mem.eql(u8, command, "list")) {
+        try ax.ensureTrusted();
         const target = args.next() orelse return error.InvalidArguments;
         const pid = try ax.resolvePidForTarget(allocator, target);
         try listWindows(allocator, pid);
@@ -54,6 +108,7 @@ fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) 
     }
 
     if (std.mem.eql(u8, command, "move")) {
+        try ax.ensureTrusted();
         const target = args.next() orelse return error.InvalidArguments;
         const pid = try ax.resolvePidForTarget(allocator, target);
         const index = try parseNextInt(args.next(), usize);
@@ -72,9 +127,13 @@ fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) 
     }
 
     if (std.mem.eql(u8, command, "tile")) {
+        try ax.ensureTrusted();
         const target = args.next() orelse return error.InvalidArguments;
         const pid = try ax.resolvePidForTarget(allocator, target);
-        const options = try parseRuntimeOptions(args, .focused_app);
+        const options = try parseRuntimeOptions(args, .{
+            .scope = loaded_config.settings.scope orelse .focused_app,
+            .layout_mode = loaded_config.settings.layout_mode orelse .bsp,
+        });
         try tileWindows(allocator, pid, options);
         return;
     }
@@ -85,39 +144,30 @@ fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) 
     }
 
     if (std.mem.eql(u8, command, "active")) {
+        try ax.ensureTrusted();
         try printActiveApp(allocator);
         return;
     }
 
     if (std.mem.eql(u8, command, "daemon")) {
-        const options = try parseRuntimeOptions(args, .all_apps_main_display);
+        try ax.ensureTrusted();
+        const options = try parseRuntimeOptions(args, .{
+            .scope = loaded_config.settings.scope orelse .all_apps_main_display,
+            .layout_mode = loaded_config.settings.layout_mode orelse .bsp,
+        });
+
         var loop = events.EventLoop.init(allocator, .{
             .scope = options.scope,
             .layout_options = .{
                 .mode = options.layout_mode,
             },
-            .border_enabled = true,
+            .border_enabled = loaded_config.settings.border_enabled orelse true,
+            .performance = loaded_config.settings.performance,
+            .hotkeys = loaded_config.settings.hotkeys,
+            .desktop = loaded_config.settings.desktop,
         });
         defer loop.deinit();
         try loop.run();
-        return;
-    }
-
-    if (std.mem.eql(u8, command, "focus")) {
-        const direction = args.next() orelse return error.InvalidArguments;
-        try sendDaemonCommand(allocator, try std.fmt.allocPrint(allocator, "focus {s}", .{direction}));
-        return;
-    }
-
-    if (std.mem.eql(u8, command, "swap")) {
-        const direction = args.next() orelse return error.InvalidArguments;
-        try sendDaemonCommand(allocator, try std.fmt.allocPrint(allocator, "swap {s}", .{direction}));
-        return;
-    }
-
-    if (std.mem.eql(u8, command, "border")) {
-        const mode = args.next() orelse return error.InvalidArguments;
-        try sendDaemonCommand(allocator, try std.fmt.allocPrint(allocator, "border {s}", .{mode}));
         return;
     }
 
@@ -179,10 +229,8 @@ const RuntimeOptions = struct {
     layout_mode: layout.LayoutMode = .bsp,
 };
 
-fn parseRuntimeOptions(args: anytype, default_scope: state.SpaceState.WindowScope) !RuntimeOptions {
-    var options = RuntimeOptions{
-        .scope = default_scope,
-    };
+fn parseRuntimeOptions(args: anytype, defaults: RuntimeOptions) !RuntimeOptions {
+    var options = defaults;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--scope")) {
             const value = args.next() orelse return error.InvalidArguments;
@@ -307,33 +355,21 @@ fn printUsage() !void {
         \\  panda focus left|right|up|down
         \\  panda swap left|right|up|down
         \\  panda border on|off|toggle|status
+        \\  panda desktop next|prev|move-next|move-prev
+        \\  panda config
         \\
-        \\Layouts:
-        \\  bsp          - Binary space partition (like Hyprland/i3). Default.
-        \\  grid         - Equal-sized grid of windows.
-        \\  master-stack - Large master window with stack on right.
+        \\Config:
+        \\  panda reads ~/.config/panda/config.lua (or $PANDA_CONFIG) for defaults,
+        \\  runtime tuning, desktop key chords, and optional global hotkeys.
         \\
         \\Examples:
-        \\  panda daemon                    # Auto-tile all tileable windows on the current display (default)
-        \\  panda tile active               # Tile windows of the frontmost app
-        \\  panda daemon --scope focused-app
-        \\  panda daemon --scope all-main-display
-        \\  panda focus right               # Focus the tiled window to the right
-        \\  panda swap right                # Double-tap to swap with the previously focused window
-        \\  panda border off                # Disable panda borders at runtime
+        \\  panda daemon
+        \\  panda focus right
+        \\  panda desktop next
+        \\  panda config
         \\
-        \\Install: curl -fsSL https://getpanda.dev/install.sh | bash
+        \\Install: curl -fsSL https://givepanda.tech/install.sh | bash
         \\         or brew install willsantiago/tap/panda
-        \\
-        \\skhd example:
-        \\  cmd - left      : panda focus left
-        \\  cmd - right     : panda focus right
-        \\  cmd - up        : panda focus up
-        \\  cmd - down      : panda focus down
-        \\  cmd + shift - left  : panda swap left
-        \\  cmd + shift - right : panda swap right
-        \\  cmd + shift - up    : panda swap up
-        \\  cmd + shift - down  : panda swap down
         \\
         \\Accessibility permission required in System Settings > Privacy & Security > Accessibility.
         \\
@@ -376,6 +412,10 @@ fn printCommandError(err: anyerror) !void {
         error.DaemonUnavailable =>
         \\panda daemon is not running.
         \\Start it with `panda daemon`, then retry the runtime command.
+        ,
+        error.EnvironmentVariableNotFound =>
+        \\panda could not resolve a home directory for config loading.
+        \\Set HOME or PANDA_CONFIG and retry.
         ,
         else => "panda failed.\n",
     };
