@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+PANDA_DMG_URL="${PANDA_DMG_URL:-https://givepanda.tech/releases/latest/panda-macos-universal.dmg}"
+PANDA_DOWNLOAD_DIR="${PANDA_DOWNLOAD_DIR:-$HOME/Downloads}"
+PANDA_DMG_PATH="${PANDA_DMG_PATH:-$PANDA_DOWNLOAD_DIR/panda-macos-universal.dmg}"
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "missing required command: $1" >&2
+    exit 1
+  }
+}
+
+need_cmd curl
+need_cmd open
+
+mkdir -p "$PANDA_DOWNLOAD_DIR"
+
+echo "Downloading Panda DMG..."
+curl --fail --location --silent --show-error "$PANDA_DMG_URL" -o "$PANDA_DMG_PATH"
+
+echo "Saved: $PANDA_DMG_PATH"
+open "$PANDA_DMG_PATH"
