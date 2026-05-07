@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/download-dmg.sh",
+      "destination": "/scripts/download-dmg.sh"
+    },
+    {
+      "source": "/releases/latest/:path*",
+      "destination": "/dist/:path*"
+    }
+  ]
+}

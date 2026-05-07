@@ -46,3 +46,14 @@ Online DMG download script:
 ```bash
 curl -fsSL https://givepanda.tech/download-dmg.sh | bash
 ```
+
+If the short download route is unavailable, the script is also served directly:
+
+```bash
+curl -fsSL https://givepanda.tech/scripts/download-dmg.sh | bash
+```
+
+Stable release artifact URLs:
+
+- `https://givepanda.tech/releases/latest/panda-macos-universal.dmg`
+- `https://givepanda.tech/releases/latest/panda-macos-universal.tar.gz`
