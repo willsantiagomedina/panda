@@ -40,6 +40,7 @@ zig build-exe \
   -framework QuartzCore \
   -lobjc \
   -lproc \
+  -lc \
   -femit-bin="$ROOT/zig-out/bin/panda"
 
 tmp_dir="$(mktemp -d)"
