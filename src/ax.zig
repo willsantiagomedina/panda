@@ -221,6 +221,10 @@ pub fn focusWindow(window: NativeWindowRef) Error!void {
     _ = c.AXUIElementSetAttributeValue(window, focused_attribute, c.kCFBooleanTrue);
 }
 
+pub fn postKeyChord(key_code: u16, modifiers: u32) bool {
+    return c.pandaPostKeyChord(key_code, modifiers);
+}
+
 pub fn addObserverNotification(
     observer: c.AXObserverRef,
     element: c.AXUIElementRef,
@@ -632,8 +636,7 @@ fn axCall(code: c.AXError) Error!void {
         c.kAXErrorCannotComplete => return Error.AppUnresponsive,
         c.kAXErrorAttributeUnsupported, c.kAXErrorNoValue => return Error.AttributeUnsupported,
         c.kAXErrorIllegalArgument, c.kAXErrorInvalidUIElement, c.kAXErrorInvalidUIElementObserver => return Error.InvalidPid,
-        c.kAXErrorNotImplemented,
-        c.kAXErrorActionUnsupported, c.kAXErrorNotificationUnsupported, c.kAXErrorParameterizedAttributeUnsupported => return Error.UnsupportedTarget,
+        c.kAXErrorNotImplemented, c.kAXErrorActionUnsupported, c.kAXErrorNotificationUnsupported, c.kAXErrorParameterizedAttributeUnsupported => return Error.UnsupportedTarget,
         else => return Error.UnexpectedAxError,
     }
 }

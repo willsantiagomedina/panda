@@ -1,21 +1,26 @@
 const std = @import("std");
 const ax = @import("ax.zig");
+const hotkeys = @import("hotkeys.zig");
 const layout = @import("layout.zig");
 const state = @import("state.zig");
 
 const log = std.log.scoped(.events);
 
-const focus_poll_interval_seconds = 0.08;
-const fallback_snapshot_poll_interval_seconds = 0.75;
-const observer_backstop_snapshot_poll_interval_seconds = 0.20;
-const control_poll_interval_seconds = 0.02;
-const immediate_relayout_delay_seconds = 0.01;
-const burst_relayout_delay_seconds = 0.04;
-const burst_window_seconds = 0.12;
-const min_relayout_interval_seconds = 0.03;
-const self_event_suppression_window_seconds = 0.20;
-const swap_double_tap_window_seconds = 0.35;
+pub const PerformanceOptions = struct {
+    focus_poll_interval_seconds: f64 = 0.08,
+    fallback_snapshot_poll_interval_seconds: f64 = 0.75,
+    observer_backstop_snapshot_poll_interval_seconds: f64 = 0.20,
+    control_poll_interval_seconds: f64 = 0.02,
+    immediate_relayout_delay_seconds: f64 = 0.01,
+    burst_relayout_delay_seconds: f64 = 0.04,
+    burst_window_seconds: f64 = 0.12,
+    min_relayout_interval_seconds: f64 = 0.03,
+    self_event_suppression_window_seconds: f64 = 0.20,
+    swap_double_tap_window_seconds: f64 = 0.35,
+};
+
 const max_command_length = 128;
+const max_hotkey_events_per_tick = 32;
 
 pub const CommandError = error{
     DaemonUnavailable,
@@ -87,6 +92,9 @@ pub const EventLoop = struct {
         scope: state.SpaceState.WindowScope = .focused_app,
         layout_options: layout.LayoutOptions = .{},
         border_enabled: bool = true,
+        performance: PerformanceOptions = .{},
+        hotkeys: []const hotkeys.HotkeyBinding = &.{},
+        desktop: hotkeys.DesktopBindings = .{},
     };
 
     pub fn init(allocator: std.mem.Allocator, options: Options) EventLoop {
@@ -104,6 +112,7 @@ pub const EventLoop = struct {
         self.freeOrderOverrides();
 
         ax.c.pandaClearBorders();
+        ax.c.pandaClearHotkeys();
 
         if (self.command_timer) |timer| {
             self.removeTimer(timer);
@@ -132,6 +141,7 @@ pub const EventLoop = struct {
         try self.installRelayoutTimer();
         try self.installCommandTimer();
         try self.setupControlSocket();
+        self.installHotkeys();
         try self.reconcileFocusedApp();
 
         ax.c.CFRunLoopRun();
@@ -139,8 +149,8 @@ pub const EventLoop = struct {
 
     fn installFocusTimer(self: *EventLoop) !void {
         self.focus_timer = try self.createTimer(
-            focus_poll_interval_seconds,
-            focus_poll_interval_seconds,
+            self.options.performance.focus_poll_interval_seconds,
+            self.options.performance.focus_poll_interval_seconds,
             focusTimerCallback,
         );
     }
@@ -155,10 +165,25 @@ pub const EventLoop = struct {
 
     fn installCommandTimer(self: *EventLoop) !void {
         self.command_timer = try self.createTimer(
-            control_poll_interval_seconds,
-            control_poll_interval_seconds,
+            self.options.performance.control_poll_interval_seconds,
+            self.options.performance.control_poll_interval_seconds,
             commandTimerCallback,
         );
+    }
+
+    fn installHotkeys(self: *EventLoop) void {
+        ax.c.pandaHotkeysInitialize();
+        ax.c.pandaClearHotkeys();
+
+        if (self.options.hotkeys.len == 0) {
+            return;
+        }
+
+        for (self.options.hotkeys) |binding| {
+            if (!ax.c.pandaRegisterHotkey(binding.id, binding.chord.key_code, binding.chord.modifiers)) {
+                log.warn("failed to register hotkey {d}", .{binding.id});
+            }
+        }
     }
 
     fn createTimer(
@@ -223,9 +248,9 @@ pub const EventLoop = struct {
 
         const snapshot_poll_interval: f64 = if (!self.notifications_enabled or
             self.options.scope == .all_apps_main_display)
-            fallback_snapshot_poll_interval_seconds
+            self.options.performance.fallback_snapshot_poll_interval_seconds
         else
-            observer_backstop_snapshot_poll_interval_seconds;
+            self.options.performance.observer_backstop_snapshot_poll_interval_seconds;
 
         const now = ax.c.CFAbsoluteTimeGetCurrent();
         if ((now - self.last_snapshot_poll_at) >= snapshot_poll_interval) {
@@ -393,7 +418,9 @@ pub const EventLoop = struct {
 
     fn handleObservedChange(self: *EventLoop, kind: NotificationKind) void {
         const now = ax.c.CFAbsoluteTimeGetCurrent();
-        if (kind != .focus and (now - self.last_relayout_at) <= self_event_suppression_window_seconds) {
+        if (kind != .focus and
+            (now - self.last_relayout_at) <= self.options.performance.self_event_suppression_window_seconds)
+        {
             return;
         }
 
@@ -407,11 +434,11 @@ pub const EventLoop = struct {
         self.last_observed_change_at = now;
 
         const delay: f64 = if (self.relayout_pending or
-            since_last_event <= burst_window_seconds or
-            since_last_relayout < min_relayout_interval_seconds)
-            burst_relayout_delay_seconds
+            since_last_event <= self.options.performance.burst_window_seconds or
+            since_last_relayout < self.options.performance.min_relayout_interval_seconds)
+            self.options.performance.burst_relayout_delay_seconds
         else
-            immediate_relayout_delay_seconds;
+            self.options.performance.immediate_relayout_delay_seconds;
 
         self.scheduleRelayout(delay);
     }
@@ -522,6 +549,70 @@ pub const EventLoop = struct {
         }
     }
 
+    fn pollHotkeys(self: *EventLoop) void {
+        if (self.options.hotkeys.len == 0) return;
+
+        var ids: [max_hotkey_events_per_tick]u32 = undefined;
+        while (true) {
+            const count = ax.c.pandaDrainHotkeys(&ids[0], @intCast(ids.len));
+            if (count <= 0) return;
+
+            for (ids[0..@intCast(count)]) |hotkey_id| {
+                self.handleHotkeyTrigger(hotkey_id);
+            }
+        }
+    }
+
+    fn handleHotkeyTrigger(self: *EventLoop, hotkey_id: u32) void {
+        for (self.options.hotkeys) |binding| {
+            if (binding.id != hotkey_id) continue;
+
+            self.runHotkeyAction(binding.action) catch |err| {
+                log.warn("hotkey action failed ({s}): {s}", .{ @tagName(binding.action), @errorName(err) });
+            };
+            return;
+        }
+    }
+
+    fn runHotkeyAction(self: *EventLoop, action: hotkeys.HotkeyAction) !void {
+        switch (action) {
+            .focus_left => try self.focusDirection(.left, false),
+            .focus_right => try self.focusDirection(.right, false),
+            .focus_up => try self.focusDirection(.up, false),
+            .focus_down => try self.focusDirection(.down, false),
+            .swap_left => try self.swapDirection(.left),
+            .swap_right => try self.swapDirection(.right),
+            .swap_up => try self.swapDirection(.up),
+            .swap_down => try self.swapDirection(.down),
+            .border_toggle => {
+                self.border_enabled = !self.border_enabled;
+                ax.c.pandaSetBordersVisible(self.border_enabled);
+                if (self.border_enabled) {
+                    self.syncBorders();
+                }
+            },
+            .desktop_next => try self.performDesktopCommand(.next),
+            .desktop_prev => try self.performDesktopCommand(.prev),
+            .desktop_move_next => try self.performDesktopCommand(.move_next),
+            .desktop_move_prev => try self.performDesktopCommand(.move_prev),
+        }
+    }
+
+    fn performDesktopCommand(self: *EventLoop, command: DesktopCommand) !void {
+        const chord = switch (command) {
+            .next => self.options.desktop.switch_next,
+            .prev => self.options.desktop.switch_prev,
+            .move_next => self.options.desktop.move_next,
+            .move_prev => self.options.desktop.move_prev,
+        };
+
+        if (!ax.postKeyChord(chord.key_code, chord.modifiers)) {
+            return error.UnexpectedAxError;
+        }
+
+        self.last_snapshot_poll_at = 0;
+    }
+
     fn handleClient(self: *EventLoop, client: std.posix.socket_t) void {
         defer std.posix.close(client);
 
@@ -587,10 +678,33 @@ pub const EventLoop = struct {
             return CommandError.InvalidCommand;
         }
 
+        if (std.mem.eql(u8, verb, "desktop")) {
+            const action = parts.next() orelse return CommandError.InvalidCommand;
+            if (std.mem.eql(u8, action, "next")) {
+                try self.performDesktopCommand(.next);
+                return "ok\n";
+            }
+            if (std.mem.eql(u8, action, "prev")) {
+                try self.performDesktopCommand(.prev);
+                return "ok\n";
+            }
+            if (std.mem.eql(u8, action, "move-next")) {
+                try self.performDesktopCommand(.move_next);
+                return "ok\n";
+            }
+            if (std.mem.eql(u8, action, "move-prev")) {
+                try self.performDesktopCommand(.move_prev);
+                return "ok\n";
+            }
+            return CommandError.InvalidCommand;
+        }
+
         return CommandError.InvalidCommand;
     }
 
     fn focusDirection(self: *EventLoop, direction: ax.Direction, arm_swap: bool) !void {
+        if (self.current_layout.items.len == 0) return;
+
         const source_id = self.focused_window_id orelse self.current_layout.items[0].window_id;
         const target_id = self.findDirectionalNeighbor(source_id, direction) orelse return;
         if (target_id == source_id) return;
@@ -620,7 +734,7 @@ pub const EventLoop = struct {
             if (navigation.armed_by_swap and
                 navigation.direction == direction and
                 navigation.to == focused_id and
-                (now - navigation.at) <= swap_double_tap_window_seconds)
+                (now - navigation.at) <= self.options.performance.swap_double_tap_window_seconds)
             {
                 try self.swapWindowOrder(pid, navigation.from, navigation.to);
                 self.last_navigation = null;
@@ -806,6 +920,13 @@ const NotificationKind = enum {
     geometry,
 };
 
+const DesktopCommand = enum {
+    next,
+    prev,
+    move_next,
+    move_prev,
+};
+
 fn focusTimerCallback(_: ax.c.CFRunLoopTimerRef, info: ?*anyopaque) callconv(.c) void {
     const loop: *EventLoop = @ptrCast(@alignCast(info orelse return));
     loop.reconcileFocusedApp() catch |err| switch (err) {
@@ -822,6 +943,7 @@ fn relayoutTimerCallback(_: ax.c.CFRunLoopTimerRef, info: ?*anyopaque) callconv(
 fn commandTimerCallback(_: ax.c.CFRunLoopTimerRef, info: ?*anyopaque) callconv(.c) void {
     const loop: *EventLoop = @ptrCast(@alignCast(info orelse return));
     loop.pollControlSocket();
+    loop.pollHotkeys();
 }
 
 fn notificationCallback(

@@ -160,20 +160,14 @@ pub const SpaceState = struct {
             try pids_on_space.put(pid, {});
         }
 
-        // Now get AX window elements only for apps with windows on current Space
-        const apps = try ax.listRunningGuiApps(self.allocator);
-        defer {
-            for (apps) |*app| app.deinit(self.allocator);
-            self.allocator.free(apps);
-        }
+        // Query AX windows only for the PIDs currently visible on this Space.
+        // This avoids a full running-app scan every relayout tick and reduces jitter.
+        var pid_iter = pids_on_space.keyIterator();
+        while (pid_iter.next()) |pid_ptr| {
+            const pid = pid_ptr.*;
+            if (pid == panda_pid) continue;
 
-        for (apps) |app| {
-            if (app.pid == panda_pid) continue;
-
-            // Skip apps that don't have windows on the current Space
-            if (!pids_on_space.contains(app.pid)) continue;
-
-            const summaries = ax.listWindows(self.allocator, app.pid) catch |err| switch (err) {
+            const summaries = ax.listWindows(self.allocator, pid) catch |err| switch (err) {
                 error.AppUnresponsive,
                 error.AttributeUnsupported,
                 error.InvalidPid,

@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-PANDA_DOWNLOAD_URL="${PANDA_DOWNLOAD_URL:-https://getpanda.dev/releases/latest/panda-macos-universal.tar.gz}"
+PANDA_DOWNLOAD_URL="${PANDA_DOWNLOAD_URL:-https://givepanda.tech/releases/latest/panda-macos-universal.tar.gz}"
 PANDA_INSTALL_DIR="${PANDA_INSTALL_DIR:-$HOME/.local/bin}"
 PANDA_TMP_DIR="${PANDA_TMP_DIR:-$HOME/.cache/panda-installer}"
 
@@ -183,6 +183,7 @@ finish_message() {
     say "panda install: add $PANDA_INSTALL_DIR to PATH if it is not already there"
   fi
   say "panda install: run 'panda help' to verify the CLI"
+  say "panda install: for the GUI DMG, use: curl -fsSL https://givepanda.tech/download-dmg.sh | bash"
 }
 
 main() {

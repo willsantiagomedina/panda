@@ -5,8 +5,14 @@
     .minimum_zig_version = "0.15.2",
     .dependencies = .{},
     .paths = .{
+        "README.md",
+        "assets",
         "build.zig",
         "build.zig.zon",
+        "examples",
+        "install.sh",
+        "packaging",
+        "scripts",
         "src",
     },
 }

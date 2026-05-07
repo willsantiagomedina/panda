@@ -22,6 +22,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkFramework("AppKit", .{});
     exe.root_module.linkFramework("CoreFoundation", .{});
     exe.root_module.linkFramework("CoreGraphics", .{});
+    exe.root_module.linkFramework("Carbon", .{});
     exe.root_module.linkFramework("Foundation", .{});
     exe.root_module.linkFramework("QuartzCore", .{});
     exe.root_module.linkSystemLibrary("objc", .{});
