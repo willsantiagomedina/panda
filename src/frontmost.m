@@ -1,6 +1,7 @@
 #import "frontmost.h"
 
 #import <AppKit/AppKit.h>
+#import <ApplicationServices/ApplicationServices.h>
 #import <Carbon/Carbon.h>
 #import <QuartzCore/QuartzCore.h>
 #import <string.h>
@@ -69,6 +70,11 @@ static int PandaDrainHotkeyEvents(uint32_t *out_hotkey_ids, int capacity) {
         count++;
     }
     return count;
+}
+
+bool pandaPromptForAccessibility(void) {
+    NSDictionary *options = @{ (__bridge id)kAXTrustedCheckOptionPrompt: @YES };
+    return AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
 }
 
 static OSStatus PandaHotkeyEventHandler(EventHandlerCallRef next_handler, EventRef event, void *user_data) {

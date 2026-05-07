@@ -52,6 +52,9 @@ void *NSScreen_mainScreen(void);
 CGRect NSScreen_visibleFrame(void *screen);
 CGRect NSScreen_frame(void *screen);
 
+// Accessibility permission helpers
+bool pandaPromptForAccessibility(void);
+
 // Border overlay helpers
 void pandaEnsureAppKitReady(void);
 void pandaSyncBorders(const PandaBorderFrame *frames, int count);

@@ -182,8 +182,9 @@ finish_message() {
   if ! printf '%s' ":$PATH:" | grep -q ":$PANDA_INSTALL_DIR:"; then
     say "panda install: add $PANDA_INSTALL_DIR to PATH if it is not already there"
   fi
-  say "panda install: run 'panda help' to verify the CLI"
-  say "panda install: for the GUI DMG, use: curl -fsSL https://givepanda.tech/download-dmg.sh | bash"
+  say "panda install: daemon installed as a per-user LaunchAgent"
+  say "panda install: run 'panda daemon-status' to verify the background service"
+  say "panda install: grant Accessibility access in System Settings > Privacy & Security > Accessibility if prompted"
 }
 
 main() {
@@ -194,6 +195,7 @@ main() {
   local archive
   archive="$(download_release)"
   install_binary "$(extract_binary "$archive")"
+  "$PANDA_INSTALL_DIR/panda" install-daemon || fail "failed to install panda daemon"
   finish_message
 }
 

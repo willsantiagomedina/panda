@@ -6,6 +6,8 @@ const layout = @import("layout.zig");
 const state = @import("state.zig");
 
 const log = std.log.scoped(.panda);
+const launch_agent_label = "dev.givepanda.panda";
+const launch_agent_filename = launch_agent_label ++ ".plist";
 
 pub fn main() !void {
     var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
@@ -36,6 +38,7 @@ pub fn main() !void {
         error.InvalidPid,
         error.UnsupportedTarget,
         error.UnexpectedAxError,
+        error.LaunchAgentFailed,
         => {
             try printCommandError(err);
             return;
@@ -93,6 +96,30 @@ fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) 
 
         std.debug.print("config: {s}\n", .{loaded.path});
         std.debug.print("status: {s}\n", .{if (loaded.exists) "loaded" else "not found (using defaults)"});
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "permissions")) {
+        if (args.next() != null) return error.InvalidArguments;
+        try showPermissions();
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "install-daemon")) {
+        if (args.next() != null) return error.InvalidArguments;
+        try installDaemon(allocator);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "uninstall-daemon")) {
+        if (args.next() != null) return error.InvalidArguments;
+        try uninstallDaemon(allocator);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "daemon-status")) {
+        if (args.next() != null) return error.InvalidArguments;
+        try daemonStatus(allocator);
         return;
     }
 
@@ -178,13 +205,193 @@ fn sendDaemonCommand(allocator: std.mem.Allocator, command: []const u8) !void {
     defer allocator.free(command);
     const response = events.sendControlCommand(allocator, command) catch |err| switch (err) {
         error.DaemonUnavailable => {
-            std.debug.print("panda daemon is not running.\nStart it first with `panda daemon`.\n", .{});
+            std.debug.print("panda daemon is not running.\nStart it with `panda install-daemon`, then retry.\n", .{});
             return;
         },
         else => return err,
     };
     defer allocator.free(response);
     std.debug.print("{s}", .{response});
+}
+
+fn showPermissions() !void {
+    if (ax.isProcessTrusted()) {
+        std.debug.print("Accessibility access is enabled for panda.\n", .{});
+        return;
+    }
+
+    _ = ax.promptForAccessibility();
+    std.debug.print(
+        \\Accessibility access is not enabled for panda.
+        \\macOS may have opened the permission prompt. If it did not, open:
+        \\System Settings > Privacy & Security > Accessibility
+        \\Then enable Panda or panda for this user.
+        \\
+    , .{});
+}
+
+fn installDaemon(allocator: std.mem.Allocator) !void {
+    const executable_path = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(executable_path);
+
+    const plist_path = try launchAgentPath(allocator);
+    defer allocator.free(plist_path);
+    const log_path = try userPath(allocator, "Library/Logs/panda.log");
+    defer allocator.free(log_path);
+    const err_path = try userPath(allocator, "Library/Logs/panda.err.log");
+    defer allocator.free(err_path);
+
+    try ensureParentDir(plist_path);
+    try ensureParentDir(log_path);
+
+    const executable_xml = try xmlEscape(allocator, executable_path);
+    defer allocator.free(executable_xml);
+    const log_xml = try xmlEscape(allocator, log_path);
+    defer allocator.free(log_xml);
+    const err_xml = try xmlEscape(allocator, err_path);
+    defer allocator.free(err_xml);
+
+    const plist = try std.fmt.allocPrint(allocator,
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0">
+        \\<dict>
+        \\  <key>Label</key>
+        \\  <string>{s}</string>
+        \\  <key>ProgramArguments</key>
+        \\  <array>
+        \\    <string>{s}</string>
+        \\    <string>daemon</string>
+        \\  </array>
+        \\  <key>RunAtLoad</key>
+        \\  <true/>
+        \\  <key>KeepAlive</key>
+        \\  <true/>
+        \\  <key>StandardOutPath</key>
+        \\  <string>{s}</string>
+        \\  <key>StandardErrorPath</key>
+        \\  <string>{s}</string>
+        \\  <key>ProcessType</key>
+        \\  <string>Interactive</string>
+        \\</dict>
+        \\</plist>
+        \\
+    , .{ launch_agent_label, executable_xml, log_xml, err_xml });
+    defer allocator.free(plist);
+
+    {
+        var plist_file = try std.fs.createFileAbsolute(plist_path, .{ .truncate = true });
+        defer plist_file.close();
+        try plist_file.writeAll(plist);
+    }
+
+    const domain = try launchctlDomain(allocator);
+    defer allocator.free(domain);
+    const service = try launchctlService(allocator);
+    defer allocator.free(service);
+
+    _ = runProcess(allocator, &.{ "launchctl", "bootout", domain, plist_path }) catch {};
+    try expectProcess(allocator, &.{ "launchctl", "bootstrap", domain, plist_path }, "load LaunchAgent");
+    try expectProcess(allocator, &.{ "launchctl", "enable", service }, "enable LaunchAgent");
+    try expectProcess(allocator, &.{ "launchctl", "kickstart", "-k", service }, "start daemon");
+
+    std.debug.print("panda daemon installed and started.\nLaunchAgent: {s}\n", .{plist_path});
+    if (!ax.isProcessTrusted()) {
+        _ = ax.promptForAccessibility();
+        std.debug.print("Accessibility access is still required. Enable Panda or panda in System Settings > Privacy & Security > Accessibility.\n", .{});
+    }
+}
+
+fn uninstallDaemon(allocator: std.mem.Allocator) !void {
+    const plist_path = try launchAgentPath(allocator);
+    defer allocator.free(plist_path);
+    const domain = try launchctlDomain(allocator);
+    defer allocator.free(domain);
+
+    _ = runProcess(allocator, &.{ "launchctl", "bootout", domain, plist_path }) catch {};
+    std.fs.deleteFileAbsolute(plist_path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+    std.debug.print("panda daemon uninstalled.\n", .{});
+}
+
+fn daemonStatus(allocator: std.mem.Allocator) !void {
+    const service = try launchctlService(allocator);
+    defer allocator.free(service);
+
+    const loaded = (runProcess(allocator, &.{ "launchctl", "print", service }) catch null) != null;
+    std.debug.print("LaunchAgent: {s}\n", .{if (loaded) "loaded" else "not loaded"});
+
+    const response = events.sendControlCommand(allocator, "border status") catch |err| switch (err) {
+        error.DaemonUnavailable => {
+            std.debug.print("Control socket: unavailable\n", .{});
+            return;
+        },
+        else => return err,
+    };
+    defer allocator.free(response);
+    std.debug.print("Control socket: responsive\n{s}", .{response});
+}
+
+fn launchAgentPath(allocator: std.mem.Allocator) ![]u8 {
+    return userPath(allocator, "Library/LaunchAgents/" ++ launch_agent_filename);
+}
+
+fn userPath(allocator: std.mem.Allocator, suffix: []const u8) ![]u8 {
+    const home = std.posix.getenv("HOME") orelse return error.EnvironmentVariableNotFound;
+    return std.fs.path.join(allocator, &.{ home, suffix });
+}
+
+fn launchctlDomain(allocator: std.mem.Allocator) ![]u8 {
+    return std.fmt.allocPrint(allocator, "gui/{d}", .{std.posix.getuid()});
+}
+
+fn launchctlService(allocator: std.mem.Allocator) ![]u8 {
+    return std.fmt.allocPrint(allocator, "gui/{d}/{s}", .{ std.posix.getuid(), launch_agent_label });
+}
+
+fn ensureParentDir(path: []const u8) !void {
+    if (std.fs.path.dirname(path)) |parent| {
+        try std.fs.cwd().makePath(parent);
+    }
+}
+
+fn runProcess(allocator: std.mem.Allocator, argv: []const []const u8) !?void {
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    const term = try child.spawnAndWait();
+    return switch (term) {
+        .Exited => |code| if (code == 0) {} else null,
+        else => null,
+    };
+}
+
+fn expectProcess(allocator: std.mem.Allocator, argv: []const []const u8, action: []const u8) !void {
+    if ((try runProcess(allocator, argv)) == null) {
+        std.debug.print("panda failed to {s}.\n", .{action});
+        return error.LaunchAgentFailed;
+    }
+}
+
+fn xmlEscape(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    var escaped = std.ArrayList(u8){};
+    defer escaped.deinit(allocator);
+
+    for (value) |byte| {
+        switch (byte) {
+            '&' => try escaped.appendSlice(allocator, "&amp;"),
+            '<' => try escaped.appendSlice(allocator, "&lt;"),
+            '>' => try escaped.appendSlice(allocator, "&gt;"),
+            '"' => try escaped.appendSlice(allocator, "&quot;"),
+            '\'' => try escaped.appendSlice(allocator, "&apos;"),
+            else => try escaped.append(allocator, byte),
+        }
+    }
+
+    return escaped.toOwnedSlice(allocator);
 }
 
 fn listWindows(allocator: std.mem.Allocator, pid: i32) !void {
@@ -352,6 +559,10 @@ fn printUsage() !void {
         \\  panda apps
         \\  panda active
         \\  panda daemon [--scope focused-app|all-main-display] [--layout bsp|grid|master-stack]
+        \\  panda install-daemon
+        \\  panda uninstall-daemon
+        \\  panda daemon-status
+        \\  panda permissions
         \\  panda focus left|right|up|down
         \\  panda swap left|right|up|down
         \\  panda border on|off|toggle|status
@@ -363,7 +574,8 @@ fn printUsage() !void {
         \\  runtime tuning, desktop key chords, and optional global hotkeys.
         \\
         \\Examples:
-        \\  panda daemon
+        \\  panda install-daemon
+        \\  panda daemon-status
         \\  panda focus right
         \\  panda desktop next
         \\  panda config
@@ -383,7 +595,7 @@ fn printCommandError(err: anyerror) !void {
     const message = switch (err) {
         error.AccessibilityDenied =>
         \\Accessibility access is not enabled for panda.
-        \\Grant access in System Settings > Privacy & Security > Accessibility, then run the command again.
+        \\Run `panda permissions`, then grant access in System Settings > Privacy & Security > Accessibility.
         ,
         error.AppNotFound =>
         \\No running app matched that target.
@@ -409,9 +621,13 @@ fn printCommandError(err: anyerror) !void {
         \\macOS returned an unhandled accessibility error.
         \\Retry with a known app PID; if it still fails, we need to extend the AX bridge diagnostics further.
         ,
+        error.LaunchAgentFailed =>
+        \\panda could not install or start the LaunchAgent.
+        \\Run `launchctl print gui/$UID/dev.givepanda.panda` and check ~/Library/Logs/panda.err.log for details.
+        ,
         error.DaemonUnavailable =>
         \\panda daemon is not running.
-        \\Start it with `panda daemon`, then retry the runtime command.
+        \\Start it with `panda install-daemon`, then retry the runtime command.
         ,
         error.EnvironmentVariableNotFound =>
         \\panda could not resolve a home directory for config loading.

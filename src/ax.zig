@@ -91,6 +91,10 @@ pub fn ensureTrusted() Error!void {
     }
 }
 
+pub fn promptForAccessibility() bool {
+    return c.pandaPromptForAccessibility();
+}
+
 pub fn createApplication(pid: i32) Error!c.AXUIElementRef {
     const app = c.AXUIElementCreateApplication(pid);
     if (app == null) {

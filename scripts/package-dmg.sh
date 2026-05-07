@@ -62,6 +62,7 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     -framework QuartzCore \
     -lobjc \
     -lproc \
+    -lc \
     -femit-bin="$ROOT/zig-out/bin/panda"
 fi
 
@@ -88,7 +89,26 @@ cat > "$MACOS_DIR/$APP_NAME" <<'EOF'
 #!/bin/zsh
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
-exec "$DIR/panda-cli" daemon
+APP_DIR="$(cd "$DIR/../.." && pwd)"
+INSTALLED_APP="/Applications/Panda.app"
+
+if [[ "$APP_DIR" != "$INSTALLED_APP" && -d /Applications ]]; then
+  if [[ -w /Applications ]]; then
+    rm -rf "$INSTALLED_APP"
+    cp -R "$APP_DIR" "$INSTALLED_APP"
+  else
+    /usr/bin/osascript - "$APP_DIR" <<'APPLESCRIPT'
+on run argv
+  set appPath to item 1 of argv
+  do shell script "rm -rf /Applications/Panda.app && cp -R " & quoted form of appPath & " /Applications/Panda.app" with administrator privileges
+end run
+APPLESCRIPT
+  fi
+  xattr -dr com.apple.quarantine "$INSTALLED_APP" >/dev/null 2>&1 || true
+  exec "$INSTALLED_APP/Contents/MacOS/panda-cli" install-daemon
+fi
+
+exec "$DIR/panda-cli" install-daemon
 EOF
 chmod +x "$MACOS_DIR/$APP_NAME"
 
