@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+LABEL="${PANDA_LABEL:-tech.givepanda.panda.devdaemon}"
+DOMAIN="gui/$(id -u)"
+TARGET="$DOMAIN/$LABEL"
+LOG_DIR="${PANDA_LOG_DIR:-$HOME/Library/Logs/panda}"
+OUT_LOG="$LOG_DIR/devdaemon.out.log"
+ERR_LOG="$LOG_DIR/devdaemon.err.log"
+
+usage() {
+  cat <<EOF
+Usage: scripts/dev-daemon <start|restart|stop|status|logs>
+
+Commands:
+  start     Start (or load) the Panda dev LaunchAgent
+  restart   Kickstart the Panda dev LaunchAgent
+  stop      Stop/unload the Panda dev LaunchAgent
+  status    Show launchctl state + pid
+  logs      Tail daemon logs
+
+Env overrides:
+  PANDA_LABEL   LaunchAgent label (default: $LABEL)
+  PANDA_LOG_DIR Log directory (default: $LOG_DIR)
+EOF
+}
+
+cmd_start() {
+  launchctl bootstrap "$DOMAIN" "$HOME/Library/LaunchAgents/$LABEL.plist" 2>/dev/null || true
+  launchctl kickstart -k "$TARGET"
+  cmd_status
+}
+
+cmd_restart() {
+  launchctl kickstart -k "$TARGET"
+  cmd_status
+}
+
+cmd_stop() {
+  launchctl bootout "$TARGET"
+}
+
+cmd_status() {
+  launchctl print "$TARGET" | rg "state =|pid =" -n -S || true
+}
+
+cmd_logs() {
+  mkdir -p "$LOG_DIR"
+  touch "$OUT_LOG" "$ERR_LOG"
+  tail -f "$OUT_LOG" "$ERR_LOG"
+}
+
+case "${1:-}" in
+  start) cmd_start ;;
+  restart) cmd_restart ;;
+  stop) cmd_stop ;;
+  status) cmd_status ;;
+  logs) cmd_logs ;;
+  *) usage; exit 1 ;;
+esac
