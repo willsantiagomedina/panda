@@ -76,11 +76,24 @@ fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) 
         const action = args.next() orelse return error.InvalidArguments;
         if (args.next() != null) return error.InvalidArguments;
 
-        if (!(std.mem.eql(u8, action, "next") or
+        const is_legacy = std.mem.eql(u8, action, "next") or
             std.mem.eql(u8, action, "prev") or
             std.mem.eql(u8, action, "move-next") or
-            std.mem.eql(u8, action, "move-prev")))
-        {
+            std.mem.eql(u8, action, "move-prev");
+
+        const is_index = blk: {
+            const parsed = std.fmt.parseUnsigned(usize, action, 10) catch break :blk false;
+            break :blk parsed >= 1 and parsed <= 9;
+        };
+
+        const is_move_index = blk: {
+            if (!std.mem.startsWith(u8, action, "move-")) break :blk false;
+            const suffix = action[5..];
+            const parsed = std.fmt.parseUnsigned(usize, suffix, 10) catch break :blk false;
+            break :blk parsed >= 1 and parsed <= 9;
+        };
+
+        if (!(is_legacy or is_index or is_move_index)) {
             return error.InvalidArguments;
         }
 
@@ -566,7 +579,7 @@ fn printUsage() !void {
         \\  panda focus left|right|up|down
         \\  panda swap left|right|up|down
         \\  panda border on|off|toggle|status
-        \\  panda desktop next|prev|move-next|move-prev
+        \\  panda desktop next|prev|move-next|move-prev|1..9|move-1..9
         \\  panda config
         \\
         \\Config:
