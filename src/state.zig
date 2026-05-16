@@ -211,7 +211,7 @@ pub const SpaceState = struct {
         try self.rebuildLinearTree();
     }
 
-    fn rebuildLinearTree(self: *SpaceState) !void {
+    pub fn rebuildLinearTree(self: *SpaceState) !void {
         self.nodes.clearRetainingCapacity();
         self.root = null;
 

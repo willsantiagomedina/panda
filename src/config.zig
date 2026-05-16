@@ -226,6 +226,80 @@ fn applyDesktopSetting(settings: *Settings, key: []const u8, raw_value: []const 
         settings.desktop.move_prev = chord;
         return;
     }
+
+    if (normalizedEq(key, "switch_1")) {
+        settings.desktop.switch_to[0] = chord;
+        return;
+    }
+    if (normalizedEq(key, "switch_2")) {
+        settings.desktop.switch_to[1] = chord;
+        return;
+    }
+    if (normalizedEq(key, "switch_3")) {
+        settings.desktop.switch_to[2] = chord;
+        return;
+    }
+    if (normalizedEq(key, "switch_4")) {
+        settings.desktop.switch_to[3] = chord;
+        return;
+    }
+    if (normalizedEq(key, "switch_5")) {
+        settings.desktop.switch_to[4] = chord;
+        return;
+    }
+    if (normalizedEq(key, "switch_6")) {
+        settings.desktop.switch_to[5] = chord;
+        return;
+    }
+    if (normalizedEq(key, "switch_7")) {
+        settings.desktop.switch_to[6] = chord;
+        return;
+    }
+    if (normalizedEq(key, "switch_8")) {
+        settings.desktop.switch_to[7] = chord;
+        return;
+    }
+    if (normalizedEq(key, "switch_9")) {
+        settings.desktop.switch_to[8] = chord;
+        return;
+    }
+
+    if (normalizedEq(key, "move_1")) {
+        settings.desktop.move_to[0] = chord;
+        return;
+    }
+    if (normalizedEq(key, "move_2")) {
+        settings.desktop.move_to[1] = chord;
+        return;
+    }
+    if (normalizedEq(key, "move_3")) {
+        settings.desktop.move_to[2] = chord;
+        return;
+    }
+    if (normalizedEq(key, "move_4")) {
+        settings.desktop.move_to[3] = chord;
+        return;
+    }
+    if (normalizedEq(key, "move_5")) {
+        settings.desktop.move_to[4] = chord;
+        return;
+    }
+    if (normalizedEq(key, "move_6")) {
+        settings.desktop.move_to[5] = chord;
+        return;
+    }
+    if (normalizedEq(key, "move_7")) {
+        settings.desktop.move_to[6] = chord;
+        return;
+    }
+    if (normalizedEq(key, "move_8")) {
+        settings.desktop.move_to[7] = chord;
+        return;
+    }
+    if (normalizedEq(key, "move_9")) {
+        settings.desktop.move_to[8] = chord;
+        return;
+    }
 }
 
 fn applyShortcutSetting(

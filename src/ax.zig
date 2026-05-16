@@ -518,6 +518,15 @@ pub fn isWindowMinimized(window: NativeWindowRef) bool {
     return c.CFBooleanGetValue(@as(c.CFBooleanRef, @ptrCast(value.?))) != 0;
 }
 
+pub fn setWindowMinimized(window: NativeWindowRef, minimized: bool) bool {
+    const minimized_attribute = makeCfString("AXMinimized") catch return false;
+    defer c.CFRelease(minimized_attribute);
+
+    const value = if (minimized) c.kCFBooleanTrue else c.kCFBooleanFalse;
+    axCall(c.AXUIElementSetAttributeValue(window, minimized_attribute, @ptrCast(value))) catch return false;
+    return true;
+}
+
 pub fn isWindowStandard(window: NativeWindowRef) bool {
     const subrole_attribute = makeCfString("AXSubrole") catch return true;
     defer c.CFRelease(subrole_attribute);

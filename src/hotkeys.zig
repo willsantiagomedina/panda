@@ -20,6 +20,28 @@ pub const DesktopBindings = struct {
     switch_next: KeyChord = .{ .key_code = key_right_arrow, .modifiers = mod_control },
     move_prev: KeyChord = .{ .key_code = key_left_arrow, .modifiers = mod_control | mod_shift },
     move_next: KeyChord = .{ .key_code = key_right_arrow, .modifiers = mod_control | mod_shift },
+    switch_to: [9]KeyChord = .{
+        .{ .key_code = 18, .modifiers = mod_control },
+        .{ .key_code = 19, .modifiers = mod_control },
+        .{ .key_code = 20, .modifiers = mod_control },
+        .{ .key_code = 21, .modifiers = mod_control },
+        .{ .key_code = 23, .modifiers = mod_control },
+        .{ .key_code = 22, .modifiers = mod_control },
+        .{ .key_code = 26, .modifiers = mod_control },
+        .{ .key_code = 28, .modifiers = mod_control },
+        .{ .key_code = 25, .modifiers = mod_control },
+    },
+    move_to: [9]KeyChord = .{
+        .{ .key_code = 18, .modifiers = mod_control | mod_shift },
+        .{ .key_code = 19, .modifiers = mod_control | mod_shift },
+        .{ .key_code = 20, .modifiers = mod_control | mod_shift },
+        .{ .key_code = 21, .modifiers = mod_control | mod_shift },
+        .{ .key_code = 23, .modifiers = mod_control | mod_shift },
+        .{ .key_code = 22, .modifiers = mod_control | mod_shift },
+        .{ .key_code = 26, .modifiers = mod_control | mod_shift },
+        .{ .key_code = 28, .modifiers = mod_control | mod_shift },
+        .{ .key_code = 25, .modifiers = mod_control | mod_shift },
+    },
 };
 
 pub const HotkeyAction = enum {
@@ -36,6 +58,24 @@ pub const HotkeyAction = enum {
     desktop_prev,
     desktop_move_next,
     desktop_move_prev,
+    desktop_1,
+    desktop_2,
+    desktop_3,
+    desktop_4,
+    desktop_5,
+    desktop_6,
+    desktop_7,
+    desktop_8,
+    desktop_9,
+    desktop_move_1,
+    desktop_move_2,
+    desktop_move_3,
+    desktop_move_4,
+    desktop_move_5,
+    desktop_move_6,
+    desktop_move_7,
+    desktop_move_8,
+    desktop_move_9,
 };
 
 pub const HotkeyBinding = struct {
@@ -61,6 +101,26 @@ pub fn actionFromConfigKey(name: []const u8) ?HotkeyAction {
     if (normalizedEq(name, "desktop_prev")) return .desktop_prev;
     if (normalizedEq(name, "desktop_move_next") or normalizedEq(name, "move_desktop_next")) return .desktop_move_next;
     if (normalizedEq(name, "desktop_move_prev") or normalizedEq(name, "move_desktop_prev")) return .desktop_move_prev;
+
+    if (normalizedEq(name, "desktop_1")) return .desktop_1;
+    if (normalizedEq(name, "desktop_2")) return .desktop_2;
+    if (normalizedEq(name, "desktop_3")) return .desktop_3;
+    if (normalizedEq(name, "desktop_4")) return .desktop_4;
+    if (normalizedEq(name, "desktop_5")) return .desktop_5;
+    if (normalizedEq(name, "desktop_6")) return .desktop_6;
+    if (normalizedEq(name, "desktop_7")) return .desktop_7;
+    if (normalizedEq(name, "desktop_8")) return .desktop_8;
+    if (normalizedEq(name, "desktop_9")) return .desktop_9;
+
+    if (normalizedEq(name, "desktop_move_1") or normalizedEq(name, "move_desktop_1")) return .desktop_move_1;
+    if (normalizedEq(name, "desktop_move_2") or normalizedEq(name, "move_desktop_2")) return .desktop_move_2;
+    if (normalizedEq(name, "desktop_move_3") or normalizedEq(name, "move_desktop_3")) return .desktop_move_3;
+    if (normalizedEq(name, "desktop_move_4") or normalizedEq(name, "move_desktop_4")) return .desktop_move_4;
+    if (normalizedEq(name, "desktop_move_5") or normalizedEq(name, "move_desktop_5")) return .desktop_move_5;
+    if (normalizedEq(name, "desktop_move_6") or normalizedEq(name, "move_desktop_6")) return .desktop_move_6;
+    if (normalizedEq(name, "desktop_move_7") or normalizedEq(name, "move_desktop_7")) return .desktop_move_7;
+    if (normalizedEq(name, "desktop_move_8") or normalizedEq(name, "move_desktop_8")) return .desktop_move_8;
+    if (normalizedEq(name, "desktop_move_9") or normalizedEq(name, "move_desktop_9")) return .desktop_move_9;
 
     return null;
 }

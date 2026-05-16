@@ -84,6 +84,8 @@ pub const EventLoop = struct {
     control_socket_fd: ?std.posix.socket_t = null,
     control_socket_path: ?[]u8 = null,
     order_overrides: std.AutoHashMap(i32, []u64),
+    workspace_assignments: std.AutoHashMap(u64, u8),
+    active_workspace: u8 = 1,
     last_snapshot_poll_at: f64 = 0,
     last_observed_change_at: f64 = 0,
     last_relayout_at: f64 = 0,
@@ -103,6 +105,7 @@ pub const EventLoop = struct {
             .options = options,
             .border_enabled = options.border_enabled,
             .order_overrides = std.AutoHashMap(i32, []u64).init(allocator),
+            .workspace_assignments = std.AutoHashMap(u64, u8).init(allocator),
         };
     }
 
@@ -110,6 +113,7 @@ pub const EventLoop = struct {
         self.clearCurrentSpace();
         self.current_layout.deinit(self.allocator);
         self.freeOrderOverrides();
+        self.workspace_assignments.deinit();
 
         ax.c.pandaClearBorders();
         ax.c.pandaClearHotkeys();
@@ -367,13 +371,61 @@ pub const EventLoop = struct {
             return;
         }
 
-        if (self.order_overrides.get(pid)) |override| {
-            try space.applyOrderOverride(override);
-        } else if (self.current_pid == pid) {
-            if (self.current_space) |*current| {
-                try space.applyOrderOverride(current.window_order.items);
+        try self.ensureWorkspaceAssignments(&space);
+        self.applyWorkspaceVisibility(&space);
+
+        var active_order = std.ArrayList(u64){};
+        defer active_order.deinit(self.allocator);
+        for (space.window_order.items) |window_id| {
+            const workspace = self.workspace_assignments.get(window_id) orelse 1;
+            if (workspace == self.active_workspace) {
+                try active_order.append(self.allocator, window_id);
             }
         }
+
+        if (active_order.items.len == 0) {
+            self.last_snapshot = .{};
+            self.clearCurrentSpace();
+            self.current_layout.clearRetainingCapacity();
+            self.syncBorders();
+            return;
+        }
+
+        if (self.order_overrides.get(pid)) |override| {
+            var filtered = std.ArrayList(u64){};
+            defer filtered.deinit(self.allocator);
+            for (override) |window_id| {
+                if (containsWindowId(active_order.items, window_id)) {
+                    try filtered.append(self.allocator, window_id);
+                }
+            }
+            for (active_order.items) |window_id| {
+                if (!containsWindowId(filtered.items, window_id)) {
+                    try filtered.append(self.allocator, window_id);
+                }
+            }
+            @memcpy(active_order.items, filtered.items);
+        } else if (self.current_pid == pid) {
+            if (self.current_space) |*current| {
+                var filtered = std.ArrayList(u64){};
+                defer filtered.deinit(self.allocator);
+                for (current.window_order.items) |window_id| {
+                    if (containsWindowId(active_order.items, window_id)) {
+                        try filtered.append(self.allocator, window_id);
+                    }
+                }
+                for (active_order.items) |window_id| {
+                    if (!containsWindowId(filtered.items, window_id)) {
+                        try filtered.append(self.allocator, window_id);
+                    }
+                }
+                @memcpy(active_order.items, filtered.items);
+            }
+        }
+
+        space.window_order.clearRetainingCapacity();
+        try space.window_order.appendSlice(self.allocator, active_order.items);
+        try space.rebuildLinearTree();
 
         const placements = try layout.computePlacements(self.allocator, &space, screen, self.options.layout_options);
         defer self.allocator.free(placements);
@@ -595,22 +647,97 @@ pub const EventLoop = struct {
             .desktop_prev => try self.performDesktopCommand(.prev),
             .desktop_move_next => try self.performDesktopCommand(.move_next),
             .desktop_move_prev => try self.performDesktopCommand(.move_prev),
+            .desktop_1 => try self.performDesktopCommand(.{ .switch_to = 1 }),
+            .desktop_2 => try self.performDesktopCommand(.{ .switch_to = 2 }),
+            .desktop_3 => try self.performDesktopCommand(.{ .switch_to = 3 }),
+            .desktop_4 => try self.performDesktopCommand(.{ .switch_to = 4 }),
+            .desktop_5 => try self.performDesktopCommand(.{ .switch_to = 5 }),
+            .desktop_6 => try self.performDesktopCommand(.{ .switch_to = 6 }),
+            .desktop_7 => try self.performDesktopCommand(.{ .switch_to = 7 }),
+            .desktop_8 => try self.performDesktopCommand(.{ .switch_to = 8 }),
+            .desktop_9 => try self.performDesktopCommand(.{ .switch_to = 9 }),
+            .desktop_move_1 => try self.performDesktopCommand(.{ .move_to = 1 }),
+            .desktop_move_2 => try self.performDesktopCommand(.{ .move_to = 2 }),
+            .desktop_move_3 => try self.performDesktopCommand(.{ .move_to = 3 }),
+            .desktop_move_4 => try self.performDesktopCommand(.{ .move_to = 4 }),
+            .desktop_move_5 => try self.performDesktopCommand(.{ .move_to = 5 }),
+            .desktop_move_6 => try self.performDesktopCommand(.{ .move_to = 6 }),
+            .desktop_move_7 => try self.performDesktopCommand(.{ .move_to = 7 }),
+            .desktop_move_8 => try self.performDesktopCommand(.{ .move_to = 8 }),
+            .desktop_move_9 => try self.performDesktopCommand(.{ .move_to = 9 }),
         }
     }
 
     fn performDesktopCommand(self: *EventLoop, command: DesktopCommand) !void {
-        const chord = switch (command) {
-            .next => self.options.desktop.switch_next,
-            .prev => self.options.desktop.switch_prev,
-            .move_next => self.options.desktop.move_next,
-            .move_prev => self.options.desktop.move_prev,
-        };
-
-        if (!ax.postKeyChord(chord.key_code, chord.modifiers)) {
-            return error.UnexpectedAxError;
+        switch (command) {
+            .next => {
+                self.active_workspace = if (self.active_workspace >= 9) 1 else self.active_workspace + 1;
+            },
+            .prev => {
+                self.active_workspace = if (self.active_workspace <= 1) 9 else self.active_workspace - 1;
+            },
+            .move_next => {
+                const target: u8 = if (self.active_workspace >= 9) 1 else self.active_workspace + 1;
+                try self.moveFocusedWindowToWorkspace(target);
+            },
+            .move_prev => {
+                const target: u8 = if (self.active_workspace <= 1) 9 else self.active_workspace - 1;
+                try self.moveFocusedWindowToWorkspace(target);
+            },
+            .switch_to => |index| {
+                self.active_workspace = @intCast(index);
+            },
+            .move_to => |index| {
+                try self.moveFocusedWindowToWorkspace(@intCast(index));
+            },
         }
 
+        if (self.current_pid) |pid| {
+            try self.relayoutPid(pid);
+        }
         self.last_snapshot_poll_at = 0;
+    }
+
+    fn ensureWorkspaceAssignments(self: *EventLoop, space: *const state.SpaceState) !void {
+        var seen = std.AutoHashMap(u64, void).init(self.allocator);
+        defer seen.deinit();
+
+        for (space.window_order.items) |window_id| {
+            try seen.put(window_id, {});
+            if (!self.workspace_assignments.contains(window_id)) {
+                try self.workspace_assignments.put(window_id, self.active_workspace);
+            }
+        }
+
+        var stale = std.ArrayList(u64){};
+        defer stale.deinit(self.allocator);
+        var it = self.workspace_assignments.iterator();
+        while (it.next()) |entry| {
+            if (!seen.contains(entry.key_ptr.*)) {
+                try stale.append(self.allocator, entry.key_ptr.*);
+            }
+        }
+        for (stale.items) |window_id| {
+            _ = self.workspace_assignments.remove(window_id);
+        }
+    }
+
+    fn applyWorkspaceVisibility(self: *EventLoop, space: *const state.SpaceState) void {
+        for (space.window_order.items) |window_id| {
+            const info = space.windows.get(window_id) orelse continue;
+            const workspace = self.workspace_assignments.get(window_id) orelse 1;
+            const should_hide = workspace != self.active_workspace;
+            _ = ax.setWindowMinimized(info.element, should_hide);
+        }
+    }
+
+    fn moveFocusedWindowToWorkspace(self: *EventLoop, workspace: u8) !void {
+        if (workspace < 1 or workspace > 9) return;
+        const focused = self.focused_window_id orelse return;
+        try self.workspace_assignments.put(focused, workspace);
+        if (workspace != self.active_workspace) {
+            self.focused_window_id = null;
+        }
     }
 
     fn handleClient(self: *EventLoop, client: std.posix.socket_t) void {
@@ -694,6 +821,14 @@ pub const EventLoop = struct {
             }
             if (std.mem.eql(u8, action, "move-prev")) {
                 try self.performDesktopCommand(.move_prev);
+                return "ok\n";
+            }
+            if (parseDesktopIndex(action)) |index| {
+                try self.performDesktopCommand(.{ .switch_to = index });
+                return "ok\n";
+            }
+            if (parseDesktopMoveIndex(action)) |index| {
+                try self.performDesktopCommand(.{ .move_to = index });
                 return "ok\n";
             }
             return CommandError.InvalidCommand;
@@ -920,11 +1055,13 @@ const NotificationKind = enum {
     geometry,
 };
 
-const DesktopCommand = enum {
+const DesktopCommand = union(enum) {
     next,
     prev,
     move_next,
     move_prev,
+    switch_to: usize,
+    move_to: usize,
 };
 
 fn focusTimerCallback(_: ax.c.CFRunLoopTimerRef, info: ?*anyopaque) callconv(.c) void {
@@ -985,6 +1122,17 @@ fn parseDirection(raw: []const u8) ?ax.Direction {
     return null;
 }
 
+fn parseDesktopIndex(raw: []const u8) ?usize {
+    const value = std.fmt.parseUnsigned(usize, raw, 10) catch return null;
+    if (value < 1 or value > 9) return null;
+    return value;
+}
+
+fn parseDesktopMoveIndex(raw: []const u8) ?usize {
+    if (!std.mem.startsWith(u8, raw, "move-")) return null;
+    return parseDesktopIndex(raw[5..]);
+}
+
 fn placementForWindow(placements: []const layout.Placement, window_id: u64) ?layout.Placement {
     for (placements) |placement| {
         if (placement.window_id == window_id) return placement;
@@ -1014,6 +1162,10 @@ fn indexOfWindowId(ids: []const u64, needle: u64) ?usize {
         if (id == needle) return index;
     }
     return null;
+}
+
+fn containsWindowId(ids: []const u64, needle: u64) bool {
+    return indexOfWindowId(ids, needle) != null;
 }
 
 fn snapshotForPlacements(placements: []const layout.Placement) WindowSnapshot {
