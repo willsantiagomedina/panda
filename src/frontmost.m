@@ -4,6 +4,7 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <Carbon/Carbon.h>
 #import <QuartzCore/QuartzCore.h>
+#import <dlfcn.h>
 #import <string.h>
 #import <unistd.h>
 
@@ -652,6 +653,91 @@ void pandaSetBordersVisible(bool visible) {
                 [window orderOut:nil];
             }
         }
+    }
+}
+
+typedef int (*PandaCGSMainConnectionIDFn)(void);
+typedef CFArrayRef (*PandaCGSCopyManagedDisplaySpacesFn)(int connection);
+typedef uint64_t (*PandaCGSGetActiveSpaceFn)(int connection);
+typedef int (*PandaCGSManagedDisplaySetCurrentSpaceFn)(int connection, CFStringRef display, uint64_t space_id);
+
+static void *PandaSkyLightSymbol(const char *name) {
+    static void *handle = NULL;
+    if (handle == NULL) {
+        handle = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY);
+    }
+    return handle == NULL ? NULL : dlsym(handle, name);
+}
+
+static NSArray<NSNumber *> *PandaCopyDesktopSpaceIds(NSString **out_display_uuid, NSUInteger *out_active_index) {
+    PandaCGSMainConnectionIDFn main_connection = (PandaCGSMainConnectionIDFn)PandaSkyLightSymbol("CGSMainConnectionID");
+    PandaCGSCopyManagedDisplaySpacesFn copy_spaces = (PandaCGSCopyManagedDisplaySpacesFn)PandaSkyLightSymbol("CGSCopyManagedDisplaySpaces");
+    PandaCGSGetActiveSpaceFn active_space = (PandaCGSGetActiveSpaceFn)PandaSkyLightSymbol("CGSGetActiveSpace");
+    if (main_connection == NULL || copy_spaces == NULL || active_space == NULL) return @[];
+
+    int connection = main_connection();
+    uint64_t active_id = active_space(connection);
+    CFArrayRef raw_displays = copy_spaces(connection);
+    if (raw_displays == NULL) return @[];
+
+    NSArray *displays = CFBridgingRelease(raw_displays);
+    for (NSDictionary *display in displays) {
+        NSArray *spaces = display[@"Spaces"];
+        if (![spaces isKindOfClass:NSArray.class]) continue;
+
+        NSMutableArray<NSNumber *> *ids = [NSMutableArray array];
+        NSUInteger active_index = NSNotFound;
+        for (NSDictionary *space in spaces) {
+            NSNumber *space_id = space[@"ManagedSpaceID"];
+            NSNumber *tile_layout = space[@"TileLayoutManager"];
+            if (space_id == nil || tile_layout != nil) continue;
+
+            if (space_id.unsignedLongLongValue == active_id) active_index = ids.count;
+            [ids addObject:space_id];
+        }
+
+        if (active_index != NSNotFound && ids.count > 0) {
+            if (out_display_uuid != NULL) {
+                NSString *uuid = display[@"Display Identifier"] ?: @"Main";
+                *out_display_uuid = uuid;
+            }
+            if (out_active_index != NULL) *out_active_index = active_index;
+            return ids;
+        }
+    }
+
+    return @[];
+}
+
+static bool PandaSetDesktopSpace(uint64_t space_id, NSString *display_uuid) {
+    PandaCGSMainConnectionIDFn main_connection = (PandaCGSMainConnectionIDFn)PandaSkyLightSymbol("CGSMainConnectionID");
+    PandaCGSManagedDisplaySetCurrentSpaceFn set_space = (PandaCGSManagedDisplaySetCurrentSpaceFn)PandaSkyLightSymbol("CGSManagedDisplaySetCurrentSpace");
+    if (main_connection == NULL || set_space == NULL || display_uuid == nil) return false;
+    return set_space(main_connection(), (__bridge CFStringRef)display_uuid, space_id) == 0;
+}
+
+bool pandaSwitchDesktopRelative(int direction) {
+    @autoreleasepool {
+        NSString *display_uuid = nil;
+        NSUInteger active_index = NSNotFound;
+        NSArray<NSNumber *> *ids = PandaCopyDesktopSpaceIds(&display_uuid, &active_index);
+        if (ids.count <= 1 || active_index == NSNotFound) return false;
+
+        NSInteger next = (NSInteger)active_index + (direction < 0 ? -1 : 1);
+        if (next < 0) next = (NSInteger)ids.count - 1;
+        if (next >= (NSInteger)ids.count) next = 0;
+        return PandaSetDesktopSpace(ids[(NSUInteger)next].unsignedLongLongValue, display_uuid);
+    }
+}
+
+bool pandaSwitchDesktopIndex(int desktop_index) {
+    @autoreleasepool {
+        if (desktop_index < 1) return false;
+        NSString *display_uuid = nil;
+        NSArray<NSNumber *> *ids = PandaCopyDesktopSpaceIds(&display_uuid, NULL);
+        NSUInteger index = (NSUInteger)(desktop_index - 1);
+        if (index >= ids.count) return false;
+        return PandaSetDesktopSpace(ids[index].unsignedLongLongValue, display_uuid);
     }
 }
 

@@ -225,6 +225,14 @@ pub fn focusWindow(window: NativeWindowRef) Error!void {
     _ = c.AXUIElementSetAttributeValue(window, focused_attribute, c.kCFBooleanTrue);
 }
 
+pub fn switchDesktopRelative(direction: i32) bool {
+    return c.pandaSwitchDesktopRelative(direction);
+}
+
+pub fn switchDesktopIndex(index: usize) bool {
+    return c.pandaSwitchDesktopIndex(@intCast(index));
+}
+
 pub fn postKeyChord(key_code: u16, modifiers: u32) bool {
     return c.pandaPostKeyChord(key_code, modifiers);
 }

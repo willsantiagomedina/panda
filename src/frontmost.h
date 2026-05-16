@@ -62,7 +62,9 @@ void pandaClearBorders(void);
 void pandaSetBordersVisible(bool visible);
 pid_t pandaCurrentProcessId(void);
 
-// Keyboard helpers (for desktop switching/moving and daemon hotkeys)
+// Desktop and keyboard helpers
+bool pandaSwitchDesktopRelative(int direction);
+bool pandaSwitchDesktopIndex(int desktop_index);
 bool pandaPostKeyChord(uint16_t key_code, uint32_t modifiers);
 
 // Global hotkeys

@@ -662,10 +662,20 @@ pub const EventLoop = struct {
     }
 
     fn performDesktopCommand(self: *EventLoop, command: DesktopCommand) !void {
-        const chord = desktopChordForCommand(self.options.desktop, command) orelse return;
-        self.suppress_hotkey_action = hotkeyActionForDesktopCommand(command);
-        self.suppress_hotkeys_until = ax.c.CFAbsoluteTimeGetCurrent() + 0.25;
-        if (!ax.postKeyChord(chord.key_code, chord.modifiers)) return error.UnexpectedAxError;
+        const handled = switch (command) {
+            .next => ax.switchDesktopRelative(1),
+            .prev => ax.switchDesktopRelative(-1),
+            .switch_to => |index| ax.switchDesktopIndex(index),
+            .move_next, .move_prev, .move_to => false,
+        };
+
+        if (!handled) {
+            const chord = desktopChordForCommand(self.options.desktop, command) orelse return;
+            self.suppress_hotkey_action = hotkeyActionForDesktopCommand(command);
+            self.suppress_hotkeys_until = ax.c.CFAbsoluteTimeGetCurrent() + 0.25;
+            if (!ax.postKeyChord(chord.key_code, chord.modifiers)) return error.UnexpectedAxError;
+        }
+
         self.last_snapshot_poll_at = 0;
     }
 
