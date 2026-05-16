@@ -73,15 +73,12 @@ pub const SpaceState = struct {
     }
 
     pub fn loadWindowsForPid(self: *SpaceState, pid: i32) !void {
-        var current_space_ids = try currentSpaceWindowIds(self.allocator);
-        defer current_space_ids.deinit();
-
         const summaries = try ax.listWindows(self.allocator, pid);
         defer self.allocator.free(summaries);
 
         for (summaries) |*summary| {
             const id = ax.windowId(summary.element);
-            if (!isTileableWindow(summary.*, id, &current_space_ids, null)) {
+            if (!isTileableWindow(summary.*, null)) {
                 summary.deinit(self.allocator);
                 continue;
             }
@@ -146,25 +143,16 @@ pub const SpaceState = struct {
 
     fn loadWindowsOnCurrentSpace(self: *SpaceState, screen: Rect) !void {
         const panda_pid: i32 = @intCast(ax.c.pandaCurrentProcessId());
-        var current_space_ids = try currentSpaceWindowIds(self.allocator);
-        defer current_space_ids.deinit();
-
-        // Build a set of PIDs that have windows on the current Space
-        var pids_on_space = std.AutoHashMap(i32, void).init(self.allocator);
-        defer pids_on_space.deinit();
-
-        var current_space_iter = current_space_ids.iterator();
-        while (current_space_iter.next()) |entry| {
-            const pid = entry.value_ptr.*;
-            if (pid == panda_pid) continue;
-            try pids_on_space.put(pid, {});
+        const apps = try ax.listRunningGuiApps(self.allocator);
+        defer {
+            for (apps) |*app| {
+                app.deinit(self.allocator);
+            }
+            self.allocator.free(apps);
         }
 
-        // Query AX windows only for the PIDs currently visible on this Space.
-        // This avoids a full running-app scan every relayout tick and reduces jitter.
-        var pid_iter = pids_on_space.keyIterator();
-        while (pid_iter.next()) |pid_ptr| {
-            const pid = pid_ptr.*;
+        for (apps) |app| {
+            const pid = app.pid;
             if (pid == panda_pid) continue;
 
             const summaries = ax.listWindows(self.allocator, pid) catch |err| switch (err) {
@@ -179,7 +167,7 @@ pub const SpaceState = struct {
 
             for (summaries) |*summary| {
                 const id = ax.windowId(summary.element);
-                if (!isTileableWindow(summary.*, id, &current_space_ids, screen)) {
+                if (!isTileableWindow(summary.*, screen)) {
                     summary.deinit(self.allocator);
                     continue;
                 }
@@ -247,28 +235,10 @@ pub const SpaceState = struct {
     }
 };
 
-fn currentSpaceWindowIds(allocator: std.mem.Allocator) !std.AutoHashMap(u64, i32) {
-    const space_windows = try ax.listWindowsOnCurrentSpace(allocator);
-    defer allocator.free(space_windows);
-
-    var ids = std.AutoHashMap(u64, i32).init(allocator);
-    errdefer ids.deinit();
-
-    for (space_windows) |win| {
-        try ids.put(win.window_id, win.pid);
-    }
-
-    return ids;
-}
-
 fn isTileableWindow(
     summary: ax.WindowSummary,
-    window_id: u64,
-    current_space_ids: *const std.AutoHashMap(u64, i32),
     screen: ?Rect,
 ) bool {
-    if (!current_space_ids.contains(window_id)) return false;
-    if (ax.isWindowMinimized(summary.element)) return false;
     if (!ax.isWindowStandard(summary.element)) return false;
     if (summary.frame.width < 80 or summary.frame.height < 80) return false;
 

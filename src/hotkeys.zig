@@ -84,6 +84,100 @@ pub const HotkeyBinding = struct {
     chord: KeyChord,
 };
 
+pub fn desktopActionForIndex(index: usize) ?HotkeyAction {
+    return switch (index) {
+        1 => .desktop_1,
+        2 => .desktop_2,
+        3 => .desktop_3,
+        4 => .desktop_4,
+        5 => .desktop_5,
+        6 => .desktop_6,
+        7 => .desktop_7,
+        8 => .desktop_8,
+        9 => .desktop_9,
+        else => null,
+    };
+}
+
+pub fn desktopMoveActionForIndex(index: usize) ?HotkeyAction {
+    return switch (index) {
+        1 => .desktop_move_1,
+        2 => .desktop_move_2,
+        3 => .desktop_move_3,
+        4 => .desktop_move_4,
+        5 => .desktop_move_5,
+        6 => .desktop_move_6,
+        7 => .desktop_move_7,
+        8 => .desktop_move_8,
+        9 => .desktop_move_9,
+        else => null,
+    };
+}
+
+pub fn buildBindings(
+    allocator: std.mem.Allocator,
+    desktop: DesktopBindings,
+    configured: []const HotkeyBinding,
+) ![]HotkeyBinding {
+    var result = std.ArrayList(HotkeyBinding){};
+    errdefer result.deinit(allocator);
+
+    try appendDesktopBindings(&result, allocator, desktop);
+
+    for (configured) |binding| {
+        if (findAction(result.items, binding.action)) |index| {
+            result.items[index].chord = binding.chord;
+            continue;
+        }
+
+        try result.append(allocator, .{
+            .id = 0,
+            .action = binding.action,
+            .chord = binding.chord,
+        });
+    }
+
+    for (result.items, 0..) |*binding, index| {
+        binding.id = @intCast(index + 1);
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
+fn appendDesktopBindings(
+    result: *std.ArrayList(HotkeyBinding),
+    allocator: std.mem.Allocator,
+    desktop: DesktopBindings,
+) !void {
+    try result.append(allocator, .{ .id = 0, .action = .desktop_prev, .chord = desktop.switch_prev });
+    try result.append(allocator, .{ .id = 0, .action = .desktop_next, .chord = desktop.switch_next });
+    try result.append(allocator, .{ .id = 0, .action = .desktop_move_prev, .chord = desktop.move_prev });
+    try result.append(allocator, .{ .id = 0, .action = .desktop_move_next, .chord = desktop.move_next });
+
+    for (desktop.switch_to, 0..) |chord, index| {
+        try result.append(allocator, .{
+            .id = 0,
+            .action = desktopActionForIndex(index + 1).?,
+            .chord = chord,
+        });
+    }
+
+    for (desktop.move_to, 0..) |chord, index| {
+        try result.append(allocator, .{
+            .id = 0,
+            .action = desktopMoveActionForIndex(index + 1).?,
+            .chord = chord,
+        });
+    }
+}
+
+fn findAction(bindings: []const HotkeyBinding, action: HotkeyAction) ?usize {
+    for (bindings, 0..) |binding, index| {
+        if (binding.action == action) return index;
+    }
+    return null;
+}
+
 pub fn actionFromConfigKey(name: []const u8) ?HotkeyAction {
     if (normalizedEq(name, "focus_left")) return .focus_left;
     if (normalizedEq(name, "focus_right")) return .focus_right;
@@ -193,17 +287,27 @@ fn parseKeyCode(token: []const u8) ?u16 {
             'r' => 15,
             'y' => 16,
             't' => 17,
+            '!' => 18,
             '1' => 18,
+            '@' => 19,
             '2' => 19,
+            '#' => 20,
             '3' => 20,
+            '$' => 21,
             '4' => 21,
+            '^' => 22,
             '6' => 22,
+            '%' => 23,
             '5' => 23,
             '=' => 24,
+            '(' => 25,
             '9' => 25,
+            '&' => 26,
             '7' => 26,
             '-' => 27,
+            '*' => 28,
             '8' => 28,
+            ')' => 29,
             '0' => 29,
             ']' => 30,
             'o' => 31,
@@ -305,5 +409,39 @@ test "parse key chords and action aliases" {
 
     try std.testing.expectEqual(HotkeyAction.desktop_move_next, actionFromConfigKey("move-desktop-next").?);
     try std.testing.expectEqual(HotkeyAction.desktop_move_prev, actionFromConfigKey("desktop_move_prev").?);
+    try std.testing.expectEqual(HotkeyAction.desktop_9, actionFromConfigKey("desktop-9").?);
+    try std.testing.expectEqual(HotkeyAction.desktop_move_9, actionFromConfigKey("move desktop 9").?);
+
+    const bang = parseKeyChord("cmd+!").?;
+    try std.testing.expectEqual(@as(u16, 18), bang.key_code);
+    try std.testing.expectEqual(mod_command, bang.modifiers);
+    try std.testing.expectEqual(@as(u16, 19), parseKeyChord("cmd+@").?.key_code);
+    try std.testing.expectEqual(@as(u16, 20), parseKeyChord("cmd+#").?.key_code);
+    try std.testing.expectEqual(@as(u16, 21), parseKeyChord("cmd+$").?.key_code);
+    try std.testing.expectEqual(@as(u16, 23), parseKeyChord("cmd+%").?.key_code);
+    try std.testing.expectEqual(@as(u16, 22), parseKeyChord("cmd+^").?.key_code);
+    try std.testing.expectEqual(@as(u16, 26), parseKeyChord("cmd+&").?.key_code);
+    try std.testing.expectEqual(@as(u16, 28), parseKeyChord("cmd+*").?.key_code);
+    try std.testing.expectEqual(@as(u16, 25), parseKeyChord("cmd+(").?.key_code);
+    try std.testing.expectEqual(@as(u16, 29), parseKeyChord("cmd+)").?.key_code);
     try std.testing.expect(parseKeyChord("cmd+left+right") == null);
+}
+
+test "build desktop hotkey bindings with configured overrides" {
+    const allocator = std.testing.allocator;
+    const configured = [_]HotkeyBinding{
+        .{ .id = 99, .action = .desktop_1, .chord = .{ .key_code = 18, .modifiers = mod_option } },
+        .{ .id = 100, .action = .focus_left, .chord = .{ .key_code = 4, .modifiers = mod_option } },
+    };
+
+    const bindings = try buildBindings(allocator, .{}, &configured);
+    defer allocator.free(bindings);
+
+    try std.testing.expectEqual(@as(usize, 23), bindings.len);
+    try std.testing.expectEqual(@as(u32, 1), bindings[0].id);
+    try std.testing.expectEqual(HotkeyAction.desktop_prev, bindings[0].action);
+    try std.testing.expectEqual(HotkeyAction.desktop_1, bindings[4].action);
+    try std.testing.expectEqual(mod_option, bindings[4].chord.modifiers);
+    try std.testing.expectEqual(HotkeyAction.focus_left, bindings[22].action);
+    try std.testing.expectEqual(@as(u32, 23), bindings[22].id);
 }

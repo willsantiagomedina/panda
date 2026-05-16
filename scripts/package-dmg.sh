@@ -8,10 +8,11 @@ APP_NAME="${APP_NAME:-Panda}"
 BUNDLE_ID="${BUNDLE_ID:-dev.givepanda.app}"
 DMG_NAME="${DMG_NAME:-panda-macos-universal.dmg}"
 DMG_VOLNAME="${DMG_VOLNAME:-Panda}"
-ICON_PNG="${ICON_PNG:-$ROOT/assets/Pandalogo.png}"
+ICON_PNG="${ICON_PNG:-$ROOT/assets/pandalogonew.png}"
 PANDA_MACOS_VERSION="${PANDA_MACOS_VERSION:-15.4}"
 PANDA_MACOS_SDK="${PANDA_MACOS_SDK:-$(xcrun --sdk "macosx$PANDA_MACOS_VERSION" --show-sdk-path 2>/dev/null || xcrun --show-sdk-path)}"
 PANDA_ARCH="${PANDA_ARCH:-$(uname -m)}"
+tmp_build_dir=""
 
 case "$PANDA_ARCH" in
   arm64) ZIG_ARCH="aarch64" ;;
@@ -32,6 +33,7 @@ need_cmd() {
 
 need_cmd zig
 need_cmd xcrun
+need_cmd clang
 need_cmd sips
 need_cmd iconutil
 need_cmd hdiutil
@@ -44,15 +46,26 @@ fi
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   mkdir -p "$ROOT/zig-out/bin"
-  zig build-exe \
+  tmp_build_dir="$(mktemp -d)"
+
+  zig build-obj \
     "$ROOT/src/main.zig" \
-    "$ROOT/src/frontmost.m" \
     -I "$ROOT/src" \
     -target "$ZIG_TARGET" \
     -O ReleaseFast \
     -F "$PANDA_MACOS_SDK/System/Library/Frameworks" \
     -I "$PANDA_MACOS_SDK/usr/include" \
-    -L "$PANDA_MACOS_SDK/usr/lib" \
+    -femit-bin="$tmp_build_dir/main.o"
+
+  clang -c "$ROOT/src/frontmost.m" \
+    -I "$ROOT/src" \
+    -isysroot "$PANDA_MACOS_SDK" \
+    -mmacosx-version-min="$PANDA_MACOS_VERSION" \
+    -o "$tmp_build_dir/frontmost.o"
+
+  clang "$tmp_build_dir/main.o" "$tmp_build_dir/frontmost.o" \
+    -isysroot "$PANDA_MACOS_SDK" \
+    -mmacosx-version-min="$PANDA_MACOS_VERSION" \
     -framework ApplicationServices \
     -framework AppKit \
     -framework CoreFoundation \
@@ -62,8 +75,7 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     -framework QuartzCore \
     -lobjc \
     -lproc \
-    -lc \
-    -femit-bin="$ROOT/zig-out/bin/panda"
+    -o "$ROOT/zig-out/bin/panda"
 fi
 
 BIN_PATH="$ROOT/zig-out/bin/panda"
@@ -73,7 +85,7 @@ if [[ ! -x "$BIN_PATH" ]]; then
 fi
 
 tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT
+trap 'rm -rf "$tmp_dir" "$tmp_build_dir"' EXIT
 
 APP_DIR="$tmp_dir/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"

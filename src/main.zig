@@ -76,26 +76,7 @@ fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) 
         const action = args.next() orelse return error.InvalidArguments;
         if (args.next() != null) return error.InvalidArguments;
 
-        const is_legacy = std.mem.eql(u8, action, "next") or
-            std.mem.eql(u8, action, "prev") or
-            std.mem.eql(u8, action, "move-next") or
-            std.mem.eql(u8, action, "move-prev");
-
-        const is_index = blk: {
-            const parsed = std.fmt.parseUnsigned(usize, action, 10) catch break :blk false;
-            break :blk parsed >= 1 and parsed <= 9;
-        };
-
-        const is_move_index = blk: {
-            if (!std.mem.startsWith(u8, action, "move-")) break :blk false;
-            const suffix = action[5..];
-            const parsed = std.fmt.parseUnsigned(usize, suffix, 10) catch break :blk false;
-            break :blk parsed >= 1 and parsed <= 9;
-        };
-
-        if (!(is_legacy or is_index or is_move_index)) {
-            return error.InvalidArguments;
-        }
+        if (!isValidDesktopAction(action)) return error.InvalidArguments;
 
         try sendDaemonCommand(allocator, try std.fmt.allocPrint(allocator, "desktop {s}", .{action}));
         return;
@@ -212,6 +193,26 @@ fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) 
     }
 
     return error.InvalidArguments;
+}
+
+fn isValidDesktopAction(action: []const u8) bool {
+    return std.mem.eql(u8, action, "next") or
+        std.mem.eql(u8, action, "prev") or
+        std.mem.eql(u8, action, "move-next") or
+        std.mem.eql(u8, action, "move-prev") or
+        parseDesktopIndex(action) != null or
+        parseDesktopMoveIndex(action) != null;
+}
+
+fn parseDesktopIndex(raw: []const u8) ?usize {
+    const parsed = std.fmt.parseUnsigned(usize, raw, 10) catch return null;
+    if (parsed < 1 or parsed > 9) return null;
+    return parsed;
+}
+
+fn parseDesktopMoveIndex(raw: []const u8) ?usize {
+    if (!std.mem.startsWith(u8, raw, "move-")) return null;
+    return parseDesktopIndex(raw[5..]);
 }
 
 fn sendDaemonCommand(allocator: std.mem.Allocator, command: []const u8) !void {
@@ -650,4 +651,30 @@ fn printCommandError(err: anyerror) !void {
     };
 
     std.debug.print("{s}\n", .{message});
+}
+
+test "desktop cli action validation" {
+    inline for ([_][]const u8{
+        "next",
+        "prev",
+        "move-next",
+        "move-prev",
+        "1",
+        "9",
+        "move-1",
+        "move-9",
+    }) |action| {
+        try std.testing.expect(isValidDesktopAction(action));
+    }
+
+    inline for ([_][]const u8{
+        "0",
+        "10",
+        "move-0",
+        "move-10",
+        "move",
+        "desktop-1",
+    }) |action| {
+        try std.testing.expect(!isValidDesktopAction(action));
+    }
 }

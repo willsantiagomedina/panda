@@ -185,7 +185,9 @@ pub const EventLoop = struct {
 
         for (self.options.hotkeys) |binding| {
             if (!ax.c.pandaRegisterHotkey(binding.id, binding.chord.key_code, binding.chord.modifiers)) {
-                log.warn("failed to register hotkey {d}", .{binding.id});
+                log.warn("failed to register hotkey {d} ({s})", .{ binding.id, @tagName(binding.action) });
+            } else {
+                log.info("registered hotkey {d} ({s})", .{ binding.id, @tagName(binding.action) });
             }
         }
     }
@@ -445,6 +447,7 @@ pub const EventLoop = struct {
         self.last_snapshot = snapshotForWindowIds(self.current_space.?.window_order.items);
         self.last_relayout_at = ax.c.CFAbsoluteTimeGetCurrent();
         self.syncFocusedWindowState(pid);
+        self.ensureActiveWorkspaceFocus() catch {};
     }
 
     fn replaceCurrentSpace(
@@ -671,17 +674,17 @@ pub const EventLoop = struct {
     fn performDesktopCommand(self: *EventLoop, command: DesktopCommand) !void {
         switch (command) {
             .next => {
-                self.active_workspace = if (self.active_workspace >= 9) 1 else self.active_workspace + 1;
+                self.active_workspace = nextWorkspace(self.active_workspace);
             },
             .prev => {
-                self.active_workspace = if (self.active_workspace <= 1) 9 else self.active_workspace - 1;
+                self.active_workspace = previousWorkspace(self.active_workspace);
             },
             .move_next => {
-                const target: u8 = if (self.active_workspace >= 9) 1 else self.active_workspace + 1;
+                const target = nextWorkspace(self.active_workspace);
                 try self.moveFocusedWindowToWorkspace(target);
             },
             .move_prev => {
-                const target: u8 = if (self.active_workspace <= 1) 9 else self.active_workspace - 1;
+                const target = previousWorkspace(self.active_workspace);
                 try self.moveFocusedWindowToWorkspace(target);
             },
             .switch_to => |index| {
@@ -692,6 +695,7 @@ pub const EventLoop = struct {
             },
         }
 
+        self.clearInactiveFocusState();
         if (self.current_pid) |pid| {
             try self.relayoutPid(pid);
         }
@@ -707,18 +711,6 @@ pub const EventLoop = struct {
             if (!self.workspace_assignments.contains(window_id)) {
                 try self.workspace_assignments.put(window_id, self.active_workspace);
             }
-        }
-
-        var stale = std.ArrayList(u64){};
-        defer stale.deinit(self.allocator);
-        var it = self.workspace_assignments.iterator();
-        while (it.next()) |entry| {
-            if (!seen.contains(entry.key_ptr.*)) {
-                try stale.append(self.allocator, entry.key_ptr.*);
-            }
-        }
-        for (stale.items) |window_id| {
-            _ = self.workspace_assignments.remove(window_id);
         }
     }
 
@@ -736,8 +728,47 @@ pub const EventLoop = struct {
         const focused = self.focused_window_id orelse return;
         try self.workspace_assignments.put(focused, workspace);
         if (workspace != self.active_workspace) {
-            self.focused_window_id = null;
+            self.focused_window_id = self.firstActiveWorkspaceWindowExcept(focused);
+            self.previous_focused_window_id = null;
+            self.last_navigation = null;
         }
+    }
+
+    fn firstActiveWorkspaceWindowExcept(self: *EventLoop, excluded: u64) ?u64 {
+        const current = self.current_space orelse return null;
+        for (current.window_order.items) |window_id| {
+            if (window_id == excluded) continue;
+            const workspace = self.workspace_assignments.get(window_id) orelse self.active_workspace;
+            if (workspace == self.active_workspace) return window_id;
+        }
+        return null;
+    }
+
+    fn clearInactiveFocusState(self: *EventLoop) void {
+        if (self.focused_window_id) |focused| {
+            const workspace = self.workspace_assignments.get(focused) orelse self.active_workspace;
+            if (workspace != self.active_workspace) {
+                self.focused_window_id = null;
+                self.previous_focused_window_id = null;
+                self.last_navigation = null;
+            }
+        }
+    }
+
+    fn ensureActiveWorkspaceFocus(self: *EventLoop) !void {
+        if (self.focused_window_id) |focused| {
+            if (self.hasPlacement(focused)) return;
+        }
+
+        const first = if (self.current_layout.items.len == 0)
+            return
+        else
+            self.current_layout.items[0].window_id;
+
+        try self.focusManagedWindow(first);
+        self.focused_window_id = first;
+        self.previous_focused_window_id = null;
+        self.last_navigation = null;
     }
 
     fn handleClient(self: *EventLoop, client: std.posix.socket_t) void {
@@ -807,31 +838,10 @@ pub const EventLoop = struct {
 
         if (std.mem.eql(u8, verb, "desktop")) {
             const action = parts.next() orelse return CommandError.InvalidCommand;
-            if (std.mem.eql(u8, action, "next")) {
-                try self.performDesktopCommand(.next);
-                return "ok\n";
-            }
-            if (std.mem.eql(u8, action, "prev")) {
-                try self.performDesktopCommand(.prev);
-                return "ok\n";
-            }
-            if (std.mem.eql(u8, action, "move-next")) {
-                try self.performDesktopCommand(.move_next);
-                return "ok\n";
-            }
-            if (std.mem.eql(u8, action, "move-prev")) {
-                try self.performDesktopCommand(.move_prev);
-                return "ok\n";
-            }
-            if (parseDesktopIndex(action)) |index| {
-                try self.performDesktopCommand(.{ .switch_to = index });
-                return "ok\n";
-            }
-            if (parseDesktopMoveIndex(action)) |index| {
-                try self.performDesktopCommand(.{ .move_to = index });
-                return "ok\n";
-            }
-            return CommandError.InvalidCommand;
+            if (parts.next() != null) return CommandError.InvalidCommand;
+            const desktop_command = parseDesktopCommand(action) orelse return CommandError.InvalidCommand;
+            try self.performDesktopCommand(desktop_command);
+            return "ok\n";
         }
 
         return CommandError.InvalidCommand;
@@ -1122,6 +1132,16 @@ fn parseDirection(raw: []const u8) ?ax.Direction {
     return null;
 }
 
+fn parseDesktopCommand(action: []const u8) ?DesktopCommand {
+    if (std.mem.eql(u8, action, "next")) return .next;
+    if (std.mem.eql(u8, action, "prev")) return .prev;
+    if (std.mem.eql(u8, action, "move-next")) return .move_next;
+    if (std.mem.eql(u8, action, "move-prev")) return .move_prev;
+    if (parseDesktopIndex(action)) |index| return .{ .switch_to = index };
+    if (parseDesktopMoveIndex(action)) |index| return .{ .move_to = index };
+    return null;
+}
+
 fn parseDesktopIndex(raw: []const u8) ?usize {
     const value = std.fmt.parseUnsigned(usize, raw, 10) catch return null;
     if (value < 1 or value > 9) return null;
@@ -1133,11 +1153,81 @@ fn parseDesktopMoveIndex(raw: []const u8) ?usize {
     return parseDesktopIndex(raw[5..]);
 }
 
+fn nextWorkspace(active: u8) u8 {
+    return if (active >= 9) 1 else active + 1;
+}
+
+fn previousWorkspace(active: u8) u8 {
+    return if (active <= 1) 9 else active - 1;
+}
+
+const DesktopTransition = struct {
+    active_workspace: u8,
+    focused_workspace: ?u8,
+};
+
+fn applyDesktopTransition(state_in: DesktopTransition, command: DesktopCommand) DesktopTransition {
+    var state_out = state_in;
+    switch (command) {
+        .next => state_out.active_workspace = nextWorkspace(state_out.active_workspace),
+        .prev => state_out.active_workspace = previousWorkspace(state_out.active_workspace),
+        .switch_to => |index| state_out.active_workspace = @intCast(index),
+        .move_next => state_out.focused_workspace = nextWorkspace(state_out.active_workspace),
+        .move_prev => state_out.focused_workspace = previousWorkspace(state_out.active_workspace),
+        .move_to => |index| state_out.focused_workspace = @intCast(index),
+    }
+    return state_out;
+}
+
 fn placementForWindow(placements: []const layout.Placement, window_id: u64) ?layout.Placement {
     for (placements) |placement| {
         if (placement.window_id == window_id) return placement;
     }
     return null;
+}
+
+test "desktop command parser accepts legacy and indexed actions" {
+    try std.testing.expect(parseDesktopCommand("next").? == .next);
+    try std.testing.expect(parseDesktopCommand("prev").? == .prev);
+    try std.testing.expect(parseDesktopCommand("move-next").? == .move_next);
+    try std.testing.expect(parseDesktopCommand("move-prev").? == .move_prev);
+
+    const switch_to = parseDesktopCommand("9").?;
+    try std.testing.expectEqual(@as(usize, 9), switch_to.switch_to);
+
+    const move_to = parseDesktopCommand("move-1").?;
+    try std.testing.expectEqual(@as(usize, 1), move_to.move_to);
+
+    try std.testing.expect(parseDesktopCommand("0") == null);
+    try std.testing.expect(parseDesktopCommand("10") == null);
+    try std.testing.expect(parseDesktopCommand("move-0") == null);
+    try std.testing.expect(parseDesktopCommand("move-10") == null);
+}
+
+test "desktop workspace transitions wrap and move focused window" {
+    try std.testing.expectEqual(@as(u8, 1), nextWorkspace(9));
+    try std.testing.expectEqual(@as(u8, 9), previousWorkspace(1));
+
+    const switched = applyDesktopTransition(.{
+        .active_workspace = 1,
+        .focused_workspace = 1,
+    }, .next);
+    try std.testing.expectEqual(@as(u8, 2), switched.active_workspace);
+    try std.testing.expectEqual(@as(u8, 1), switched.focused_workspace.?);
+
+    const moved = applyDesktopTransition(.{
+        .active_workspace = 9,
+        .focused_workspace = 9,
+    }, .move_next);
+    try std.testing.expectEqual(@as(u8, 9), moved.active_workspace);
+    try std.testing.expectEqual(@as(u8, 1), moved.focused_workspace.?);
+
+    const indexed = applyDesktopTransition(.{
+        .active_workspace = 2,
+        .focused_workspace = 2,
+    }, .{ .move_to = 7 });
+    try std.testing.expectEqual(@as(u8, 2), indexed.active_workspace);
+    try std.testing.expectEqual(@as(u8, 7), indexed.focused_workspace.?);
 }
 
 fn rectCenter(rect: state.Rect) state.Rect {

@@ -21,16 +21,33 @@ ZIG_TARGET="${ZIG_TARGET:-$ZIG_ARCH-macos.$PANDA_MACOS_VERSION}"
 mkdir -p "$DIST_DIR"
 rm -f "$DIST_DIR/$ARCHIVE_NAME" "$DIST_DIR/$ARCHIVE_NAME.sha256"
 
+command -v zig >/dev/null 2>&1 || { echo "missing required command: zig" >&2; exit 1; }
+command -v xcrun >/dev/null 2>&1 || { echo "missing required command: xcrun" >&2; exit 1; }
+command -v clang >/dev/null 2>&1 || { echo "missing required command: clang" >&2; exit 1; }
+
 mkdir -p "$ROOT/zig-out/bin"
-zig build-exe \
+tmp_build_dir="$(mktemp -d)"
+tmp_dir=""
+trap 'rm -rf "$tmp_dir" "$tmp_build_dir"' EXIT
+
+zig build-obj \
   "$ROOT/src/main.zig" \
-  "$ROOT/src/frontmost.m" \
   -I "$ROOT/src" \
   -target "$ZIG_TARGET" \
   -O ReleaseFast \
   -F "$PANDA_MACOS_SDK/System/Library/Frameworks" \
   -I "$PANDA_MACOS_SDK/usr/include" \
-  -L "$PANDA_MACOS_SDK/usr/lib" \
+  -femit-bin="$tmp_build_dir/main.o"
+
+clang -c "$ROOT/src/frontmost.m" \
+  -I "$ROOT/src" \
+  -isysroot "$PANDA_MACOS_SDK" \
+  -mmacosx-version-min="$PANDA_MACOS_VERSION" \
+  -o "$tmp_build_dir/frontmost.o"
+
+clang "$tmp_build_dir/main.o" "$tmp_build_dir/frontmost.o" \
+  -isysroot "$PANDA_MACOS_SDK" \
+  -mmacosx-version-min="$PANDA_MACOS_VERSION" \
   -framework ApplicationServices \
   -framework AppKit \
   -framework CoreFoundation \
@@ -40,11 +57,9 @@ zig build-exe \
   -framework QuartzCore \
   -lobjc \
   -lproc \
-  -lc \
-  -femit-bin="$ROOT/zig-out/bin/panda"
+  -o "$ROOT/zig-out/bin/panda"
 
 tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT
 cp "$ROOT/zig-out/bin/panda" "$tmp_dir/panda"
 chmod +x "$tmp_dir/panda"
 

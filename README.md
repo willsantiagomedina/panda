@@ -38,7 +38,7 @@ Config supports:
 ## Packaging
 
 - `scripts/package-release.sh` builds the universal tarball artifact (+ DMG by default).
-- `scripts/package-dmg.sh` builds `Panda.app` + `.dmg` (using `assets/Pandalogo.png`). Opening the app installs/starts Panda as a per-user LaunchAgent.
+- `scripts/package-dmg.sh` builds `Panda.app` + `.dmg` (using `assets/pandalogonew.png`). Opening the app installs/starts Panda as a per-user LaunchAgent.
 - `scripts/download-dmg.sh` downloads the latest DMG to `~/Downloads` and opens it.
 
 After installing, grant Accessibility access in System Settings > Privacy & Security > Accessibility when macOS prompts. Check the background service with:

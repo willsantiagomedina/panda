@@ -43,6 +43,33 @@ pub fn build(b: *std.Build) void {
     const check_step = b.step("check", "Compile panda");
     check_step.dependOn(&exe.step);
 
+    const tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    tests.root_module.addIncludePath(b.path("src"));
+    tests.addCSourceFile(.{
+        .file = b.path("src/frontmost.m"),
+        .flags = &.{},
+    });
+    tests.root_module.linkFramework("ApplicationServices", .{});
+    tests.root_module.linkFramework("AppKit", .{});
+    tests.root_module.linkFramework("CoreFoundation", .{});
+    tests.root_module.linkFramework("CoreGraphics", .{});
+    tests.root_module.linkFramework("Carbon", .{});
+    tests.root_module.linkFramework("Foundation", .{});
+    tests.root_module.linkFramework("QuartzCore", .{});
+    tests.root_module.linkSystemLibrary("objc", .{});
+    tests.root_module.linkSystemLibrary("proc", .{});
+    tests.linkLibC();
+
+    const run_tests = b.addRunArtifact(tests);
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_tests.step);
+
     const home = b.graph.env_map.get("HOME") orelse "/Users/willsantiago";
     const install_dir = b.fmt("{s}/.local/bin", .{home});
     const installed_bin = b.getInstallPath(.bin, "panda");

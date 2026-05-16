@@ -39,7 +39,10 @@ pub fn load(allocator: std.mem.Allocator) !LoadedConfig {
     };
 
     const file = std.fs.openFileAbsolute(loaded.path, .{}) catch |err| switch (err) {
-        error.FileNotFound => return loaded,
+        error.FileNotFound => {
+            loaded.settings.hotkeys = try hotkeys.buildBindings(allocator, loaded.settings.desktop, &.{});
+            return loaded;
+        },
         else => return err,
     };
     defer file.close();
@@ -138,7 +141,7 @@ fn parseConfigBytes(settings: *Settings, allocator: std.mem.Allocator, bytes: []
         }
     }
 
-    settings.hotkeys = try parsed_hotkeys.toOwnedSlice(allocator);
+    settings.hotkeys = try hotkeys.buildBindings(allocator, settings.desktop, parsed_hotkeys.items);
 }
 
 fn applyRootSetting(settings: *Settings, key: []const u8, raw_value: []const u8) void {
@@ -494,10 +497,14 @@ test "parse lua-style config table" {
         \\    switch_next = "ctrl+right",
         \\    move_prev = "ctrl+shift+left",
         \\    move_next = "ctrl+shift+right",
+        \\    switch_1 = "cmd+!",
+        \\    move_1 = "cmd+shift+!",
         \\  },
         \\  shortcuts = {
         \\    focus_left = "alt+h",
+        \\    desktop_1 = "alt+!",
         \\    desktop_move_next = "alt+cmd+shift+right",
+        \\    desktop_move_9 = "alt+cmd+shift+(",
         \\    border_toggle = "alt+b",
         \\  },
         \\}
@@ -513,8 +520,17 @@ test "parse lua-style config table" {
     try std.testing.expectEqual(hotkeys.mod_control, settings.desktop.switch_prev.modifiers);
     try std.testing.expectEqual(hotkeys.key_right_arrow, settings.desktop.move_next.key_code);
     try std.testing.expectEqual(hotkeys.mod_control | hotkeys.mod_shift, settings.desktop.move_next.modifiers);
-    try std.testing.expectEqual(@as(usize, 3), settings.hotkeys.len);
-    try std.testing.expectEqual(hotkeys.HotkeyAction.focus_left, settings.hotkeys[0].action);
-    try std.testing.expectEqual(hotkeys.HotkeyAction.desktop_move_next, settings.hotkeys[1].action);
-    try std.testing.expectEqual(hotkeys.HotkeyAction.border_toggle, settings.hotkeys[2].action);
+    try std.testing.expectEqual(@as(u16, 18), settings.desktop.switch_to[0].key_code);
+    try std.testing.expectEqual(hotkeys.mod_command, settings.desktop.switch_to[0].modifiers);
+    try std.testing.expectEqual(@as(usize, 24), settings.hotkeys.len);
+    try std.testing.expectEqual(hotkeys.HotkeyAction.desktop_prev, settings.hotkeys[0].action);
+    try std.testing.expectEqual(hotkeys.HotkeyAction.desktop_1, settings.hotkeys[4].action);
+    try std.testing.expectEqual(@as(u16, 18), settings.hotkeys[4].chord.key_code);
+    try std.testing.expectEqual(hotkeys.mod_option, settings.hotkeys[4].chord.modifiers);
+    try std.testing.expectEqual(hotkeys.HotkeyAction.desktop_move_next, settings.hotkeys[3].action);
+    try std.testing.expectEqual(hotkeys.mod_option | hotkeys.mod_command | hotkeys.mod_shift, settings.hotkeys[3].chord.modifiers);
+    try std.testing.expectEqual(hotkeys.HotkeyAction.desktop_move_9, settings.hotkeys[21].action);
+    try std.testing.expectEqual(@as(u16, 25), settings.hotkeys[21].chord.key_code);
+    try std.testing.expectEqual(hotkeys.HotkeyAction.focus_left, settings.hotkeys[22].action);
+    try std.testing.expectEqual(hotkeys.HotkeyAction.border_toggle, settings.hotkeys[23].action);
 }
