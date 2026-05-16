@@ -84,11 +84,11 @@ pub const EventLoop = struct {
     control_socket_fd: ?std.posix.socket_t = null,
     control_socket_path: ?[]u8 = null,
     order_overrides: std.AutoHashMap(i32, []u64),
-    workspace_assignments: std.AutoHashMap(u64, u8),
-    active_workspace: u8 = 1,
     last_snapshot_poll_at: f64 = 0,
     last_observed_change_at: f64 = 0,
     last_relayout_at: f64 = 0,
+    suppress_hotkey_action: ?hotkeys.HotkeyAction = null,
+    suppress_hotkeys_until: f64 = 0,
 
     pub const Options = struct {
         scope: state.SpaceState.WindowScope = .focused_app,
@@ -105,7 +105,6 @@ pub const EventLoop = struct {
             .options = options,
             .border_enabled = options.border_enabled,
             .order_overrides = std.AutoHashMap(i32, []u64).init(allocator),
-            .workspace_assignments = std.AutoHashMap(u64, u8).init(allocator),
         };
     }
 
@@ -113,8 +112,6 @@ pub const EventLoop = struct {
         self.clearCurrentSpace();
         self.current_layout.deinit(self.allocator);
         self.freeOrderOverrides();
-        self.workspace_assignments.deinit();
-
         ax.c.pandaClearBorders();
         ax.c.pandaClearHotkeys();
 
@@ -373,25 +370,9 @@ pub const EventLoop = struct {
             return;
         }
 
-        try self.ensureWorkspaceAssignments(&space);
-        self.applyWorkspaceVisibility(&space);
-
         var active_order = std.ArrayList(u64){};
         defer active_order.deinit(self.allocator);
-        for (space.window_order.items) |window_id| {
-            const workspace = self.workspace_assignments.get(window_id) orelse 1;
-            if (workspace == self.active_workspace) {
-                try active_order.append(self.allocator, window_id);
-            }
-        }
-
-        if (active_order.items.len == 0) {
-            self.last_snapshot = .{};
-            self.clearCurrentSpace();
-            self.current_layout.clearRetainingCapacity();
-            self.syncBorders();
-            return;
-        }
+        try active_order.appendSlice(self.allocator, space.window_order.items);
 
         if (self.order_overrides.get(pid)) |override| {
             var filtered = std.ArrayList(u64){};
@@ -622,6 +603,15 @@ pub const EventLoop = struct {
         for (self.options.hotkeys) |binding| {
             if (binding.id != hotkey_id) continue;
 
+            const now = ax.c.CFAbsoluteTimeGetCurrent();
+            if (self.suppress_hotkey_action != null and
+                self.suppress_hotkey_action.? == binding.action and
+                now <= self.suppress_hotkeys_until)
+            {
+                self.suppress_hotkey_action = null;
+                return;
+            }
+
             self.runHotkeyAction(binding.action) catch |err| {
                 log.warn("hotkey action failed ({s}): {s}", .{ @tagName(binding.action), @errorName(err) });
             };
@@ -672,87 +662,11 @@ pub const EventLoop = struct {
     }
 
     fn performDesktopCommand(self: *EventLoop, command: DesktopCommand) !void {
-        switch (command) {
-            .next => {
-                self.active_workspace = nextWorkspace(self.active_workspace);
-            },
-            .prev => {
-                self.active_workspace = previousWorkspace(self.active_workspace);
-            },
-            .move_next => {
-                const target = nextWorkspace(self.active_workspace);
-                try self.moveFocusedWindowToWorkspace(target);
-            },
-            .move_prev => {
-                const target = previousWorkspace(self.active_workspace);
-                try self.moveFocusedWindowToWorkspace(target);
-            },
-            .switch_to => |index| {
-                self.active_workspace = @intCast(index);
-            },
-            .move_to => |index| {
-                try self.moveFocusedWindowToWorkspace(@intCast(index));
-            },
-        }
-
-        self.clearInactiveFocusState();
-        if (self.current_pid) |pid| {
-            try self.relayoutPid(pid);
-        }
+        const chord = desktopChordForCommand(self.options.desktop, command) orelse return;
+        self.suppress_hotkey_action = hotkeyActionForDesktopCommand(command);
+        self.suppress_hotkeys_until = ax.c.CFAbsoluteTimeGetCurrent() + 0.25;
+        if (!ax.postKeyChord(chord.key_code, chord.modifiers)) return error.UnexpectedAxError;
         self.last_snapshot_poll_at = 0;
-    }
-
-    fn ensureWorkspaceAssignments(self: *EventLoop, space: *const state.SpaceState) !void {
-        var seen = std.AutoHashMap(u64, void).init(self.allocator);
-        defer seen.deinit();
-
-        for (space.window_order.items) |window_id| {
-            try seen.put(window_id, {});
-            if (!self.workspace_assignments.contains(window_id)) {
-                try self.workspace_assignments.put(window_id, self.active_workspace);
-            }
-        }
-    }
-
-    fn applyWorkspaceVisibility(self: *EventLoop, space: *const state.SpaceState) void {
-        for (space.window_order.items) |window_id| {
-            const info = space.windows.get(window_id) orelse continue;
-            const workspace = self.workspace_assignments.get(window_id) orelse 1;
-            const should_hide = workspace != self.active_workspace;
-            _ = ax.setWindowMinimized(info.element, should_hide);
-        }
-    }
-
-    fn moveFocusedWindowToWorkspace(self: *EventLoop, workspace: u8) !void {
-        if (workspace < 1 or workspace > 9) return;
-        const focused = self.focused_window_id orelse return;
-        try self.workspace_assignments.put(focused, workspace);
-        if (workspace != self.active_workspace) {
-            self.focused_window_id = self.firstActiveWorkspaceWindowExcept(focused);
-            self.previous_focused_window_id = null;
-            self.last_navigation = null;
-        }
-    }
-
-    fn firstActiveWorkspaceWindowExcept(self: *EventLoop, excluded: u64) ?u64 {
-        const current = self.current_space orelse return null;
-        for (current.window_order.items) |window_id| {
-            if (window_id == excluded) continue;
-            const workspace = self.workspace_assignments.get(window_id) orelse self.active_workspace;
-            if (workspace == self.active_workspace) return window_id;
-        }
-        return null;
-    }
-
-    fn clearInactiveFocusState(self: *EventLoop) void {
-        if (self.focused_window_id) |focused| {
-            const workspace = self.workspace_assignments.get(focused) orelse self.active_workspace;
-            if (workspace != self.active_workspace) {
-                self.focused_window_id = null;
-                self.previous_focused_window_id = null;
-                self.last_navigation = null;
-            }
-        }
     }
 
     fn ensureActiveWorkspaceFocus(self: *EventLoop) !void {
@@ -1159,6 +1073,28 @@ fn nextWorkspace(active: u8) u8 {
 
 fn previousWorkspace(active: u8) u8 {
     return if (active <= 1) 9 else active - 1;
+}
+
+fn desktopChordForCommand(desktop: hotkeys.DesktopBindings, command: DesktopCommand) ?hotkeys.KeyChord {
+    return switch (command) {
+        .next => desktop.switch_next,
+        .prev => desktop.switch_prev,
+        .move_next => desktop.move_next,
+        .move_prev => desktop.move_prev,
+        .switch_to => |index| if (index >= 1 and index <= 9) desktop.switch_to[index - 1] else null,
+        .move_to => |index| if (index >= 1 and index <= 9) desktop.move_to[index - 1] else null,
+    };
+}
+
+fn hotkeyActionForDesktopCommand(command: DesktopCommand) ?hotkeys.HotkeyAction {
+    return switch (command) {
+        .next => .desktop_next,
+        .prev => .desktop_prev,
+        .move_next => .desktop_move_next,
+        .move_prev => .desktop_move_prev,
+        .switch_to => |index| hotkeys.desktopActionForIndex(index),
+        .move_to => |index| hotkeys.desktopMoveActionForIndex(index),
+    };
 }
 
 const DesktopTransition = struct {
