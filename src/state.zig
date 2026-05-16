@@ -143,6 +143,17 @@ pub const SpaceState = struct {
 
     fn loadWindowsOnCurrentSpace(self: *SpaceState, screen: Rect) !void {
         const panda_pid: i32 = @intCast(ax.c.pandaCurrentProcessId());
+        const visible_windows = try ax.listWindowsOnCurrentSpace(self.allocator);
+        defer self.allocator.free(visible_windows);
+
+        var visible_ids = std.AutoHashMap(u64, void).init(self.allocator);
+        defer visible_ids.deinit();
+        for (visible_windows) |window| {
+            if (window.pid == panda_pid) continue;
+            if (!rectIntersects(window.bounds, screen)) continue;
+            try visible_ids.put(window.window_id, {});
+        }
+
         const apps = try ax.listRunningGuiApps(self.allocator);
         defer {
             for (apps) |*app| {
@@ -167,7 +178,7 @@ pub const SpaceState = struct {
 
             for (summaries) |*summary| {
                 const id = ax.windowId(summary.element);
-                if (!isTileableWindow(summary.*, screen)) {
+                if (!visible_ids.contains(id) or ax.isWindowMinimized(summary.element) or !isTileableWindow(summary.*, screen)) {
                     summary.deinit(self.allocator);
                     continue;
                 }
