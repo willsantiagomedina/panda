@@ -121,10 +121,22 @@ end run
 APPLESCRIPT
   fi
   xattr -dr com.apple.quarantine "$INSTALLED_APP" >/dev/null 2>&1 || true
-  exec "$INSTALLED_APP/Contents/MacOS/panda-cli" install-daemon
+  exec "$INSTALLED_APP/Contents/MacOS/Panda"
 fi
 
-exec "$DIR/panda-cli" install-daemon
+LOG_DIR="$HOME/Library/Logs"
+mkdir -p "$LOG_DIR"
+
+"$DIR/panda-cli" uninstall-daemon >/dev/null 2>&1 || true
+pkill -f '/Applications/Panda.app/Contents/MacOS/panda-cli daemon' >/dev/null 2>&1 || true
+pkill -f "$DIR/panda-cli daemon" >/dev/null 2>&1 || true
+
+if ! "$DIR/panda-cli" permissions >/dev/null 2>&1; then
+  "$DIR/panda-cli" permissions >/dev/null 2>&1 || true
+fi
+
+nohup "$DIR/panda-cli" daemon >>"$LOG_DIR/panda.log" 2>>"$LOG_DIR/panda.err.log" &
+disown
 EOF
 chmod +x "$MACOS_DIR/$APP_NAME"
 
