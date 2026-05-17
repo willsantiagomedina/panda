@@ -119,7 +119,7 @@ pub fn buildBindings(
     desktop: DesktopBindings,
     configured: []const HotkeyBinding,
 ) ![]HotkeyBinding {
-    var result = std.ArrayList(HotkeyBinding){};
+    var result = std.ArrayList(HotkeyBinding).empty;
     errdefer result.deinit(allocator);
 
     try appendDesktopBindings(&result, allocator, desktop);

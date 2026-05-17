@@ -6,6 +6,10 @@ pub const c = @cImport({
     @cInclude("ApplicationServices/ApplicationServices.h");
     @cInclude("CoreFoundation/CoreFoundation.h");
     @cInclude("frontmost.h");
+    @cInclude("sys/socket.h");
+    @cInclude("sys/un.h");
+    @cInclude("fcntl.h");
+    @cInclude("unistd.h");
     @cInclude("libproc.h");
 });
 
@@ -165,6 +169,15 @@ pub fn listWindows(allocator: std.mem.Allocator, pid: i32) Error![]WindowSummary
     }
 
     return result;
+}
+
+pub fn setWindowPosition(window: NativeWindowRef, x: f64, y: f64) Error!void {
+    var point = c.CGPoint{ .x = x, .y = y };
+    const position_attribute = try makeCfString("AXPosition");
+    defer c.CFRelease(position_attribute);
+    const position_value = c.AXValueCreate(c.kAXValueCGPointType, &point) orelse return Error.ConversionFailed;
+    defer c.CFRelease(position_value);
+    try axCall(c.AXUIElementSetAttributeValue(window, position_attribute, position_value));
 }
 
 pub fn moveResizeWindow(window: NativeWindowRef, frame: Rect) Error!void {

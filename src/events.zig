@@ -3,6 +3,7 @@ const ax = @import("ax.zig");
 const hotkeys = @import("hotkeys.zig");
 const layout = @import("layout.zig");
 const state = @import("state.zig");
+const workspaces = @import("workspaces.zig");
 
 const log = std.log.scoped(.events);
 
@@ -28,28 +29,25 @@ pub const CommandError = error{
 };
 
 pub fn controlSocketPath(allocator: std.mem.Allocator) ![]u8 {
-    return std.fmt.allocPrint(allocator, "/tmp/panda-{d}.sock", .{std.posix.getuid()});
+    return std.fmt.allocPrint(allocator, "/tmp/panda-{d}.sock", .{ax.c.getuid()});
 }
 
 pub fn sendControlCommand(allocator: std.mem.Allocator, command: []const u8) ![]u8 {
     const socket_path = try controlSocketPath(allocator);
     defer allocator.free(socket_path);
 
-    var stream = std.net.connectUnixSocket(socket_path) catch return CommandError.DaemonUnavailable;
-    defer stream.close();
+    const stream = connectUnixSocket(socket_path) catch return CommandError.DaemonUnavailable;
+    defer _ = ax.c.close(stream);
 
-    _ = try std.posix.write(stream.handle, command);
-    _ = try std.posix.write(stream.handle, "\n");
+    _ = try writeFd(stream, command);
+    _ = try writeFd(stream, "\n");
 
-    var response = std.ArrayList(u8){};
+    var response = std.ArrayList(u8).empty;
     defer response.deinit(allocator);
 
     var buffer: [256]u8 = undefined;
     while (true) {
-        const read = stream.read(&buffer) catch |err| switch (err) {
-            error.WouldBlock => break,
-            else => return err,
-        };
+        const read = readFd(stream, &buffer) catch break;
         if (read == 0) break;
         try response.appendSlice(allocator, buffer[0..read]);
     }
@@ -81,12 +79,14 @@ pub const EventLoop = struct {
     notifications_enabled: bool = false,
     relayout_pending: bool = false,
     border_enabled: bool = true,
-    control_socket_fd: ?std.posix.socket_t = null,
+    control_socket_fd: ?c_int = null,
     control_socket_path: ?[]u8 = null,
     order_overrides: std.AutoHashMap(i32, []u64),
+    workspace_manager: workspaces.WorkspaceManager,
     last_snapshot_poll_at: f64 = 0,
     last_observed_change_at: f64 = 0,
     last_relayout_at: f64 = 0,
+    desktop_status_buffer: [384]u8 = undefined,
     suppress_hotkey_action: ?hotkeys.HotkeyAction = null,
     suppress_hotkeys_until: f64 = 0,
 
@@ -105,6 +105,7 @@ pub const EventLoop = struct {
             .options = options,
             .border_enabled = options.border_enabled,
             .order_overrides = std.AutoHashMap(i32, []u64).init(allocator),
+            .workspace_manager = workspaces.WorkspaceManager.init(allocator),
         };
     }
 
@@ -112,6 +113,7 @@ pub const EventLoop = struct {
         self.clearCurrentSpace();
         self.current_layout.deinit(self.allocator);
         self.freeOrderOverrides();
+        self.workspace_manager.deinit();
         ax.c.pandaClearBorders();
         ax.c.pandaClearHotkeys();
 
@@ -346,7 +348,7 @@ pub const EventLoop = struct {
             .height = screen_bounds.height,
         };
 
-        space.loadWindowsForScope(self.options.scope, pid, screen) catch |err| switch (err) {
+        space.loadAllTileableWindowsForRunningApps() catch |err| switch (err) {
             error.AppUnresponsive,
             error.AttributeUnsupported,
             error.InvalidPid,
@@ -362,6 +364,9 @@ pub const EventLoop = struct {
             else => return err,
         };
 
+        try self.reconcileWorkspaces(&space);
+        try self.filterToActiveWorkspace(&space);
+
         if (space.window_order.items.len == 0) {
             self.last_snapshot = .{};
             self.clearCurrentSpace();
@@ -370,12 +375,12 @@ pub const EventLoop = struct {
             return;
         }
 
-        var active_order = std.ArrayList(u64){};
+        var active_order = std.ArrayList(u64).empty;
         defer active_order.deinit(self.allocator);
         try active_order.appendSlice(self.allocator, space.window_order.items);
 
         if (self.order_overrides.get(pid)) |override| {
-            var filtered = std.ArrayList(u64){};
+            var filtered = std.ArrayList(u64).empty;
             defer filtered.deinit(self.allocator);
             for (override) |window_id| {
                 if (containsWindowId(active_order.items, window_id)) {
@@ -390,7 +395,7 @@ pub const EventLoop = struct {
             @memcpy(active_order.items, filtered.items);
         } else if (self.current_pid == pid) {
             if (self.current_space) |*current| {
-                var filtered = std.ArrayList(u64){};
+                var filtered = std.ArrayList(u64).empty;
                 defer filtered.deinit(self.allocator);
                 for (current.window_order.items) |window_id| {
                     if (containsWindowId(active_order.items, window_id)) {
@@ -505,6 +510,7 @@ pub const EventLoop = struct {
         const maybe_id = ax.focusedWindowId(pid) catch return;
         const focused_id = maybe_id orelse return;
         if (!self.hasPlacement(focused_id)) return;
+        self.workspace_manager.setRecentFocus(focused_id);
         if (self.focused_window_id != null and self.focused_window_id.? != focused_id) {
             self.previous_focused_window_id = self.focused_window_id;
         }
@@ -543,16 +549,8 @@ pub const EventLoop = struct {
             else => return err,
         };
 
-        const listener = try std.posix.socket(
-            std.posix.AF.UNIX,
-            std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC | std.posix.SOCK.NONBLOCK,
-            0,
-        );
-        errdefer std.posix.close(listener);
-
-        var address = try std.net.Address.initUnix(socket_path);
-        try std.posix.bind(listener, &address.any, address.getOsSockLen());
-        try std.posix.listen(listener, 8);
+        const listener = try createUnixListener(socket_path);
+        errdefer _ = ax.c.close(listener);
 
         self.control_socket_fd = listener;
         self.control_socket_path = socket_path;
@@ -560,7 +558,7 @@ pub const EventLoop = struct {
 
     fn teardownControlSocket(self: *EventLoop) void {
         if (self.control_socket_fd) |fd| {
-            std.posix.close(fd);
+            _ = ax.c.close(fd);
             self.control_socket_fd = null;
         }
         if (self.control_socket_path) |path| {
@@ -574,7 +572,7 @@ pub const EventLoop = struct {
         const listener = self.control_socket_fd orelse return;
 
         while (true) {
-            const client = std.posix.accept(listener, null, null, std.posix.SOCK.CLOEXEC | std.posix.SOCK.NONBLOCK) catch |err| switch (err) {
+            const client = acceptFd(listener) catch |err| switch (err) {
                 error.WouldBlock => return,
                 else => {
                     log.err("control accept failed: {s}", .{@errorName(err)});
@@ -662,12 +660,77 @@ pub const EventLoop = struct {
     }
 
     fn performDesktopCommand(self: *EventLoop, command: DesktopCommand) !void {
-        const command_to_send = resolveDesktopCommand(command) orelse command;
-        const chord = desktopChordForCommand(self.options.desktop, command_to_send) orelse return;
-        self.suppress_hotkey_action = hotkeyActionForDesktopCommand(command_to_send);
-        self.suppress_hotkeys_until = ax.c.CFAbsoluteTimeGetCurrent() + 0.25;
-        if (!ax.postKeyChord(chord.key_code, chord.modifiers)) return error.UnexpectedAxError;
+        const target = switch (command) {
+            .next => self.workspace_manager.next(),
+            .prev => self.workspace_manager.prev(),
+            .switch_to => |index| @as(u8, @intCast(index)),
+            .move_next => self.workspace_manager.next(),
+            .move_prev => self.workspace_manager.prev(),
+            .move_to => |index| @as(u8, @intCast(index)),
+        };
+
+        switch (command) {
+            .next, .prev, .switch_to => try self.switchWorkspace(target),
+            .move_next, .move_prev, .move_to => try self.moveFocusedWindowToWorkspace(target),
+        }
+    }
+
+    fn reconcileWorkspaces(self: *EventLoop, space: *state.SpaceState) !void {
+        var live_ids = std.ArrayList(u64).empty;
+        defer live_ids.deinit(self.allocator);
+        for (space.window_order.items) |id| {
+            const info = space.windows.get(id) orelse continue;
+            try live_ids.append(self.allocator, id);
+            try self.workspace_manager.ensureWindow(id, info.pid, info.frame, info.floating);
+        }
+        try self.workspace_manager.removeMissing(live_ids.items);
+    }
+
+    fn filterToActiveWorkspace(self: *EventLoop, space: *state.SpaceState) !void {
+        var allowed = std.AutoHashMap(u64, void).init(self.allocator);
+        defer allowed.deinit();
+        for (self.workspace_manager.activeWindowIds()) |id| {
+            if (self.workspace_manager.isActiveWindow(id)) try allowed.put(id, {});
+        }
+        try space.retainOnlyWindowIds(&allowed);
+    }
+
+    fn switchWorkspace(self: *EventLoop, target: u8) !void {
+        const old = self.workspace_manager.active;
+        if (old == target) return;
+        self.hideWorkspace(old);
+        try self.workspace_manager.switchTo(target);
+        self.unhideWorkspace(target);
         self.last_snapshot_poll_at = 0;
+        if (self.current_pid) |pid| try self.relayoutPid(pid);
+    }
+
+    fn moveFocusedWindowToWorkspace(self: *EventLoop, target: u8) !void {
+        const focused = self.focused_window_id orelse return;
+        try self.workspace_manager.moveWindowTo(focused, target);
+        if (target != self.workspace_manager.active) {
+            self.hideWindowById(focused);
+            self.focused_window_id = null;
+        }
+        if (self.current_pid) |pid| try self.relayoutPid(pid);
+    }
+
+    fn hideWorkspace(self: *EventLoop, id: u8) void {
+        for (self.workspace_manager.workspaces[id - 1].window_order.items) |window_id| self.hideWindowById(window_id);
+    }
+
+    fn unhideWorkspace(self: *EventLoop, id: u8) void {
+        for (self.workspace_manager.workspaces[id - 1].window_order.items) |window_id| self.workspace_manager.setHidden(window_id, false, null);
+    }
+
+    fn hideWindowById(self: *EventLoop, window_id: u64) void {
+        const current = self.current_space orelse return;
+        const info = current.windows.get(window_id) orelse return;
+        const proportional_x = if (self.current_screen.width > 0) (info.frame.x - self.current_screen.x) / self.current_screen.width else 0;
+        const proportional_y = if (self.current_screen.height > 0) (info.frame.y - self.current_screen.y) / self.current_screen.height else 0;
+        const geometry: workspaces.HiddenGeometry = .{ .frame = info.frame, .screen = self.current_screen, .proportional_x = @max(0, @min(1, proportional_x)), .proportional_y = @max(0, @min(1, proportional_y)) };
+        ax.setWindowPosition(info.element, self.current_screen.x + self.current_screen.width + 8, self.current_screen.y + self.current_screen.height - info.frame.height - 8) catch return;
+        self.workspace_manager.setHidden(window_id, true, geometry);
     }
 
     fn ensureActiveWorkspaceFocus(self: *EventLoop) !void {
@@ -686,14 +749,14 @@ pub const EventLoop = struct {
         self.last_navigation = null;
     }
 
-    fn handleClient(self: *EventLoop, client: std.posix.socket_t) void {
-        defer std.posix.close(client);
+    fn handleClient(self: *EventLoop, client: c_int) void {
+        defer _ = ax.c.close(client);
 
         var buffer: [max_command_length]u8 = undefined;
-        const read = std.posix.read(client, &buffer) catch |err| switch (err) {
+        const read = readFd(client, &buffer) catch |err| switch (err) {
             error.WouldBlock => return,
             else => {
-                _ = std.posix.write(client, "error: failed to read command\n") catch {};
+                _ = writeFd(client, "error: failed to read command\n") catch {};
                 log.err("control read failed: {s}", .{@errorName(err)});
                 return;
             },
@@ -707,7 +770,7 @@ pub const EventLoop = struct {
             CommandError.InvalidCommand => "error: invalid command\n",
             else => "error: command failed\n",
         };
-        _ = std.posix.write(client, response) catch {};
+        _ = writeFd(client, response) catch {};
     }
 
     fn executeControlCommand(self: *EventLoop, raw: []const u8) ![]const u8 {
@@ -754,12 +817,23 @@ pub const EventLoop = struct {
         if (std.mem.eql(u8, verb, "desktop")) {
             const action = parts.next() orelse return CommandError.InvalidCommand;
             if (parts.next() != null) return CommandError.InvalidCommand;
+            if (std.mem.eql(u8, action, "status")) return self.desktopStatus();
             const desktop_command = parseDesktopCommand(action) orelse return CommandError.InvalidCommand;
             try self.performDesktopCommand(desktop_command);
             return "ok\n";
         }
 
         return CommandError.InvalidCommand;
+    }
+
+    fn desktopStatus(self: *EventLoop) []const u8 {
+        var stream = std.io.fixedBufferStream(&self.desktop_status_buffer);
+        const writer = stream.writer();
+        writer.print("workspace: {d}\n", .{self.workspace_manager.active}) catch return "error: status too large\n";
+        for (self.workspace_manager.workspaces) |space| {
+            writer.print("{d}: {d} windows{s}\n", .{ space.id, space.window_order.items.len, if (space.id == self.workspace_manager.active) " active" else "" }) catch return "error: status too large\n";
+        }
+        return stream.getWritten();
     }
 
     fn focusDirection(self: *EventLoop, direction: ax.Direction, arm_swap: bool) !void {
@@ -1037,6 +1111,54 @@ fn registerNotification(
         },
     };
     return true;
+}
+
+fn connectUnixSocket(path: []const u8) !c_int {
+    const fd = ax.c.socket(ax.c.AF_UNIX, ax.c.SOCK_STREAM, 0);
+    if (fd < 0) return error.UnexpectedAxError;
+    errdefer _ = ax.c.close(fd);
+    var addr: ax.c.sockaddr_un = undefined;
+    @memset(std.mem.asBytes(&addr), 0);
+    addr.sun_family = ax.c.AF_UNIX;
+    if (path.len >= addr.sun_path.len) return error.NameTooLong;
+    @memcpy(addr.sun_path[0..path.len], path);
+    addr.sun_path[path.len] = 0;
+    if (ax.c.connect(fd, @ptrCast(&addr), @sizeOf(ax.c.sockaddr_un)) != 0) return error.UnexpectedAxError;
+    return fd;
+}
+
+fn createUnixListener(path: []const u8) !c_int {
+    const fd = ax.c.socket(ax.c.AF_UNIX, ax.c.SOCK_STREAM | ax.c.SOCK_CLOEXEC | ax.c.SOCK_NONBLOCK, 0);
+    if (fd < 0) return error.UnexpectedAxError;
+    errdefer _ = ax.c.close(fd);
+    var addr: ax.c.sockaddr_un = undefined;
+    @memset(std.mem.asBytes(&addr), 0);
+    addr.sun_family = ax.c.AF_UNIX;
+    if (path.len >= addr.sun_path.len) return error.NameTooLong;
+    @memcpy(addr.sun_path[0..path.len], path);
+    addr.sun_path[path.len] = 0;
+    if (ax.c.bind(fd, @ptrCast(&addr), @sizeOf(ax.c.sockaddr_un)) != 0) return error.UnexpectedAxError;
+    if (ax.c.listen(fd, 8) != 0) return error.UnexpectedAxError;
+    return fd;
+}
+
+fn acceptFd(listener: c_int) !c_int {
+    const fd = ax.c.accept(listener, null, null);
+    if (fd < 0) return error.WouldBlock;
+    _ = ax.c.fcntl(fd, ax.c.F_SETFL, ax.c.O_NONBLOCK);
+    return fd;
+}
+
+fn readFd(fd: c_int, buffer: []u8) !usize {
+    const result = ax.c.read(fd, buffer.ptr, buffer.len);
+    if (result < 0) return error.WouldBlock;
+    return @intCast(result);
+}
+
+fn writeFd(fd: c_int, bytes: []const u8) !usize {
+    const result = ax.c.write(fd, bytes.ptr, bytes.len);
+    if (result < 0) return error.UnexpectedAxError;
+    return @intCast(result);
 }
 
 fn parseDirection(raw: []const u8) ?ax.Direction {

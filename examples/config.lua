@@ -21,9 +21,8 @@ return {
     swap_double_tap_window = 0.35,
   },
 
-  -- key chords panda sends to macOS for desktop commands.
-  -- NOTE: for move_next/move_prev to work, set matching shortcuts in
-  -- System Settings > Keyboard > Keyboard Shortcuts > Mission Control.
+  -- Desktop commands are Panda-managed virtual workspaces, independent of
+  -- macOS Mission Control Spaces. These chords are daemon hotkey defaults.
   desktop = {
     switch_prev = "ctrl+left",
     switch_next = "ctrl+right",

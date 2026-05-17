@@ -37,6 +37,7 @@ pub const WindowInfo = struct {
     frame: Rect,
     title: []u8,
     bundle_id: []u8,
+    pid: i32,
     floating: bool,
 
     pub fn deinit(self: *WindowInfo, allocator: std.mem.Allocator) void {
@@ -100,6 +101,7 @@ pub const SpaceState = struct {
                 },
                 .title = summary.title,
                 .bundle_id = bundle_id,
+                .pid = pid,
                 .floating = false,
             });
             try self.window_order.append(self.allocator, id);
@@ -121,10 +123,36 @@ pub const SpaceState = struct {
         }
     }
 
+    pub fn retainOnlyWindowIds(self: *SpaceState, allowed: *const std.AutoHashMap(u64, void)) !void {
+        var ids_to_remove = std.ArrayList(u64).empty;
+        defer ids_to_remove.deinit(self.allocator);
+
+        var it = self.windows.iterator();
+        while (it.next()) |entry| {
+            if (!allowed.contains(entry.key_ptr.*)) try ids_to_remove.append(self.allocator, entry.key_ptr.*);
+        }
+
+        for (ids_to_remove.items) |id| {
+            if (self.windows.fetchRemove(id)) |entry| {
+                var value = entry.value;
+                value.deinit(self.allocator);
+            }
+        }
+
+        var kept = std.ArrayList(u64).empty;
+        defer kept.deinit(self.allocator);
+        for (self.window_order.items) |id| {
+            if (self.windows.contains(id)) try kept.append(self.allocator, id);
+        }
+        self.window_order.clearRetainingCapacity();
+        try self.window_order.appendSlice(self.allocator, kept.items);
+        try self.rebuildLinearTree();
+    }
+
     pub fn applyOrderOverride(self: *SpaceState, preferred_order: []const u64) !void {
         if (self.window_order.items.len <= 1 or preferred_order.len == 0) return;
 
-        var reordered = std.ArrayList(u64){};
+        var reordered = std.ArrayList(u64).empty;
         defer reordered.deinit(self.allocator);
 
         for (preferred_order) |window_id| {
@@ -138,6 +166,47 @@ pub const SpaceState = struct {
         }
 
         @memcpy(self.window_order.items, reordered.items);
+        try self.rebuildLinearTree();
+    }
+
+    pub fn loadAllTileableWindowsForRunningApps(self: *SpaceState) !void {
+        const panda_pid: i32 = @intCast(ax.c.pandaCurrentProcessId());
+        const apps = try ax.listRunningGuiApps(self.allocator);
+        defer {
+            for (apps) |*app| app.deinit(self.allocator);
+            self.allocator.free(apps);
+        }
+
+        for (apps) |app| {
+            const pid = app.pid;
+            if (pid == panda_pid) continue;
+            const summaries = ax.listWindows(self.allocator, pid) catch |err| switch (err) {
+                error.AppUnresponsive, error.AttributeUnsupported, error.InvalidPid, error.UnsupportedTarget => continue,
+                else => return err,
+            };
+            defer self.allocator.free(summaries);
+
+            for (summaries) |*summary| {
+                const id = ax.windowId(summary.element);
+                if (ax.isWindowMinimized(summary.element) or !isTileableWindow(summary.*, null) or self.windows.contains(id)) {
+                    summary.deinit(self.allocator);
+                    continue;
+                }
+                const bundle_id = try self.allocator.dupe(u8, "");
+                try self.windows.put(id, .{
+                    .id = id,
+                    .element = summary.element,
+                    .frame = .{ .x = summary.frame.x, .y = summary.frame.y, .width = summary.frame.width, .height = summary.frame.height },
+                    .title = summary.title,
+                    .bundle_id = bundle_id,
+                    .pid = pid,
+                    .floating = false,
+                });
+                try self.window_order.append(self.allocator, id);
+            }
+        }
+
+        sortWindowOrder(self.window_order.items);
         try self.rebuildLinearTree();
     }
 
@@ -200,6 +269,7 @@ pub const SpaceState = struct {
                     },
                     .title = summary.title,
                     .bundle_id = bundle_id,
+                    .pid = pid,
                     .floating = false,
                 });
                 try self.window_order.append(self.allocator, id);
