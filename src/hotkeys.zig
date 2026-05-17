@@ -177,7 +177,7 @@ fn appendDefaultOptionDesktopHotkeys(result: *std.ArrayList(HotkeyBinding)) void
     for (number_keys, 0..) |key_code, index| {
         const action = desktopActionForIndex(index + 1).?;
         if (findAction(result.items, action)) |existing| {
-            result.items[existing].chord = .{ .key_code = key_code, .modifiers = mod_option | mod_shift };
+            result.items[existing].chord = .{ .key_code = key_code, .modifiers = mod_option };
         }
     }
 }

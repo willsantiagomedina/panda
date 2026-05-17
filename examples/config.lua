@@ -57,12 +57,12 @@ return {
     desktop_move_prev = "alt+cmd+shift+left",
     desktop_move_next = "alt+cmd+shift+right",
 
-    desktop_1 = "option+!",
-    desktop_2 = "option+@",
-    desktop_3 = "option+#",
-    desktop_4 = "option+$",
-    desktop_5 = "option+%",
-    desktop_6 = "option+^",
+    desktop_1 = "option+1",
+    desktop_2 = "option+2",
+    desktop_3 = "option+3",
+    desktop_4 = "option+4",
+    desktop_5 = "option+5",
+    desktop_6 = "option+6",
 
     border_toggle = "alt+b",
   },
