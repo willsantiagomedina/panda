@@ -346,21 +346,25 @@ fn updateApp(allocator: std.mem.Allocator) !void {
         \\  rm -rf "$TMP_DIR"
         \\}
         \\trap cleanup EXIT
-        \\echo "panda update: downloading latest app..."
+        \\cute() {
+        \\  printf "\033[1;95mʕ•ᴥ•ʔ\033[0m %s\n" "$1"
+        \\}
+        \\cute "scampering off to fetch the freshest Panda..."
         \\curl -fsSL "$DMG_URL" -o "$TMP_DIR/panda.dmg"
         \\mkdir -p "$TMP_DIR/mount"
+        \\cute "opening the bamboo crate..."
         \\hdiutil attach "$TMP_DIR/panda.dmg" -mountpoint "$TMP_DIR/mount" -nobrowse -quiet
         \\test -d "$TMP_DIR/mount/Panda.app"
-        \\echo "panda update: stopping daemon..."
+        \\cute "putting the old panda down for a nap..."
         \\/Applications/Panda.app/Contents/MacOS/panda-cli uninstall-daemon >/dev/null 2>&1 || true
         \\pkill -f '/Applications/Panda.app/Contents/MacOS/panda-cli daemon' >/dev/null 2>&1 || true
-        \\echo "panda update: replacing /Applications/Panda.app..."
+        \\cute "moving the new panda into /Applications..."
         \\rm -rf /Applications/Panda.app
         \\cp -R "$TMP_DIR/mount/Panda.app" /Applications/Panda.app
         \\xattr -dr com.apple.quarantine /Applications/Panda.app >/dev/null 2>&1 || true
-        \\echo "panda update: restarting daemon..."
+        \\cute "waking panda back up..."
         \\/Applications/Panda.app/Contents/MacOS/panda-cli install-daemon
-        \\echo "panda update: done"
+        \\printf "\033[1;92mʕっ•ᴥ•ʔっ Panda is up to date!\033[0m\n"
     ;
 
     try expectProcess(allocator, &.{ "/bin/zsh", "-lc", script }, "update Panda.app");
