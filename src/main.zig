@@ -251,7 +251,9 @@ fn showPermissions() !void {
 }
 
 fn installDaemon(allocator: std.mem.Allocator) !void {
-    const executable_path = try std.fs.selfExePathAlloc(allocator);
+    const self_executable_path = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(self_executable_path);
+    const executable_path = try launchAgentExecutablePath(allocator, self_executable_path);
     defer allocator.free(executable_path);
 
     const plist_path = try launchAgentPath(allocator);
@@ -367,7 +369,7 @@ fn updateApp(allocator: std.mem.Allocator) !void {
         \\printf "\033[1;92mʕっ•ᴥ•ʔっ Panda is up to date!\033[0m\n"
     ;
 
-    try expectProcess(allocator, &.{ "/bin/zsh", "-lc", script }, "update Panda.app");
+    try expectProcessInherit(allocator, &.{ "/bin/zsh", "-lc", script }, "update Panda.app");
 }
 
 fn daemonStatus(allocator: std.mem.Allocator) !void {
@@ -390,6 +392,23 @@ fn daemonStatus(allocator: std.mem.Allocator) !void {
 
 fn launchAgentPath(allocator: std.mem.Allocator) ![]u8 {
     return userPath(allocator, "Library/LaunchAgents/" ++ launch_agent_filename);
+}
+
+fn launchAgentExecutablePath(allocator: std.mem.Allocator, self_executable_path: []const u8) ![]u8 {
+    if (std.mem.endsWith(u8, self_executable_path, "/Contents/MacOS/panda-cli")) {
+        const app_executable = try std.mem.concat(allocator, u8, &.{ self_executable_path[0 .. self_executable_path.len - "panda-cli".len], "Panda" });
+        if (isExecutableFile(app_executable)) return app_executable;
+        allocator.free(app_executable);
+    }
+
+    return allocator.dupe(u8, self_executable_path);
+}
+
+fn isExecutableFile(path: []const u8) bool {
+    const file = std.fs.openFileAbsolute(path, .{}) catch return false;
+    defer file.close();
+    const stat = file.stat() catch return false;
+    return (stat.mode & 0o111) != 0;
 }
 
 fn userPath(allocator: std.mem.Allocator, suffix: []const u8) ![]u8 {
@@ -428,6 +447,20 @@ fn expectProcess(allocator: std.mem.Allocator, argv: []const []const u8, action:
         std.debug.print("panda failed to {s}.\n", .{action});
         return error.LaunchAgentFailed;
     }
+}
+
+fn expectProcessInherit(allocator: std.mem.Allocator, argv: []const []const u8, action: []const u8) !void {
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Inherit;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+    const term = try child.spawnAndWait();
+    switch (term) {
+        .Exited => |code| if (code == 0) return,
+        else => {},
+    }
+    std.debug.print("panda failed to {s}.\n", .{action});
+    return error.LaunchAgentFailed;
 }
 
 fn xmlEscape(allocator: std.mem.Allocator, value: []const u8) ![]u8 {

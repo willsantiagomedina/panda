@@ -104,6 +104,10 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$(cd "$DIR/../.." && pwd)"
 INSTALLED_APP="/Applications/Panda.app"
 
+if [[ $# -gt 0 ]]; then
+  exec "$DIR/panda-cli" "$@"
+fi
+
 if [[ "$APP_DIR" != "$INSTALLED_APP" && -d /Applications ]]; then
   if [[ -w /Applications ]]; then
     rm -rf "$INSTALLED_APP"
