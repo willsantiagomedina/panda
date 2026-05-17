@@ -238,7 +238,8 @@ main() {
   local archive
   archive="$(download_release)"
   install_binary "$(extract_binary "$archive")"
-  run_cute "teaching panda to run in the background..." "$PANDA_INSTALL_DIR/panda" install-daemon || fail "failed to install panda daemon"
+  say "ʕ•ᴥ•ʔ  teaching panda to run in the background..."
+  "$PANDA_INSTALL_DIR/panda" install-daemon || fail "failed to install panda daemon"
   finish_message
 }
 
