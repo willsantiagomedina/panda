@@ -715,13 +715,24 @@ pub const EventLoop = struct {
     }
 
     fn moveFocusedWindowToWorkspace(self: *EventLoop, target: u8) !void {
-        const focused = self.focused_window_id orelse return;
+        const focused = self.focused_window_id orelse self.currentFocusedManagedWindowId() orelse return;
         try self.workspace_manager.moveWindowTo(focused, target);
         if (target != self.workspace_manager.active) {
             self.hideWindowById(focused);
             self.focused_window_id = null;
         }
         if (self.current_pid) |pid| try self.relayoutPid(pid);
+    }
+
+    fn currentFocusedManagedWindowId(self: *EventLoop) ?u64 {
+        if (self.current_pid) |pid| {
+            if (ax.focusedWindowId(pid) catch null) |window_id| {
+                if (self.workspace_manager.windows.contains(window_id)) return window_id;
+            }
+        }
+
+        if (self.current_layout.items.len != 0) return self.current_layout.items[0].window_id;
+        return null;
     }
 
     fn hideWorkspace(self: *EventLoop, id: u8) void {
