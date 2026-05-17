@@ -215,17 +215,36 @@ fn isRunningFromAppBundle(allocator: std.mem.Allocator) !bool {
 fn launchAppDaemon(allocator: std.mem.Allocator) !void {
     const exe_path = try std.fs.selfExePathAlloc(allocator);
     defer allocator.free(exe_path);
+
+    if (std.mem.indexOf(u8, exe_path, "/Applications/Panda.app/Contents/MacOS/") == null) {
+        const app_root = appBundleRoot(exe_path) orelse return;
+        const quoted_app = try shellQuote(allocator, app_root);
+        defer allocator.free(quoted_app);
+        const install_script = try std.fmt.allocPrint(allocator,
+            \\set -euo pipefail
+            \\INSTALLED_APP="/Applications/Panda.app"
+            \\rm -rf "$INSTALLED_APP"
+            \\cp -R {0s} "$INSTALLED_APP"
+            \\xattr -dr com.apple.quarantine "$INSTALLED_APP" >/dev/null 2>&1 || true
+            \\open "$INSTALLED_APP"
+        , .{quoted_app});
+        defer allocator.free(install_script);
+        _ = try runProcess(allocator, &.{ "/bin/zsh", "-lc", install_script });
+        return;
+    }
+
     const quoted_exe = try shellQuote(allocator, exe_path);
     defer allocator.free(quoted_exe);
+
+    if (!ax.isProcessTrusted()) {
+        _ = ax.promptForAccessibility();
+        return;
+    }
 
     const script = try std.fmt.allocPrint(allocator,
         \\set -euo pipefail
         \\LOG_DIR="$HOME/Library/Logs"
         \\mkdir -p "$LOG_DIR"
-        \\if ! {0s} permissions >/dev/null 2>&1; then
-        \\  {0s} permissions >/dev/null 2>&1 || true
-        \\  exit 0
-        \\fi
         \\{0s} uninstall-daemon >/dev/null 2>&1 || true
         \\pkill -f '/Applications/Panda.app/Contents/MacOS/panda-cli daemon' >/dev/null 2>&1 || true
         \\nohup {0s} daemon >>"$LOG_DIR/panda.log" 2>>"$LOG_DIR/panda.err.log" &
@@ -233,6 +252,12 @@ fn launchAppDaemon(allocator: std.mem.Allocator) !void {
     defer allocator.free(script);
 
     _ = try runProcess(allocator, &.{ "/bin/zsh", "-lc", script });
+}
+
+fn appBundleRoot(exe_path: []const u8) ?[]const u8 {
+    const marker = "/Contents/MacOS/";
+    const index = std.mem.indexOf(u8, exe_path, marker) orelse return null;
+    return exe_path[0..index];
 }
 
 fn isValidDesktopAction(action: []const u8) bool {

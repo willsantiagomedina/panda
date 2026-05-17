@@ -94,51 +94,9 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
+cp "$BIN_PATH" "$MACOS_DIR/$APP_NAME"
 cp "$BIN_PATH" "$MACOS_DIR/panda-cli"
-chmod +x "$MACOS_DIR/panda-cli"
-
-cat > "$MACOS_DIR/$APP_NAME" <<'EOF'
-#!/bin/zsh
-set -euo pipefail
-DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_DIR="$(cd "$DIR/../.." && pwd)"
-INSTALLED_APP="/Applications/Panda.app"
-
-if [[ $# -gt 0 ]]; then
-  exec "$DIR/panda-cli" "$@"
-fi
-
-if [[ "$APP_DIR" != "$INSTALLED_APP" && -d /Applications ]]; then
-  if [[ -w /Applications ]]; then
-    rm -rf "$INSTALLED_APP"
-    cp -R "$APP_DIR" "$INSTALLED_APP"
-  else
-    /usr/bin/osascript - "$APP_DIR" <<'APPLESCRIPT'
-on run argv
-  set appPath to item 1 of argv
-  do shell script "rm -rf /Applications/Panda.app && cp -R " & quoted form of appPath & " /Applications/Panda.app" with administrator privileges
-end run
-APPLESCRIPT
-  fi
-  xattr -dr com.apple.quarantine "$INSTALLED_APP" >/dev/null 2>&1 || true
-  exec "$INSTALLED_APP/Contents/MacOS/Panda"
-fi
-
-LOG_DIR="$HOME/Library/Logs"
-mkdir -p "$LOG_DIR"
-
-"$DIR/panda-cli" uninstall-daemon >/dev/null 2>&1 || true
-pkill -f '/Applications/Panda.app/Contents/MacOS/panda-cli daemon' >/dev/null 2>&1 || true
-pkill -f "$DIR/panda-cli daemon" >/dev/null 2>&1 || true
-
-if ! "$DIR/panda-cli" permissions >/dev/null 2>&1; then
-  "$DIR/panda-cli" permissions >/dev/null 2>&1 || true
-fi
-
-nohup "$DIR/panda-cli" daemon >>"$LOG_DIR/panda.log" 2>>"$LOG_DIR/panda.err.log" &
-disown
-EOF
-chmod +x "$MACOS_DIR/$APP_NAME"
+chmod +x "$MACOS_DIR/$APP_NAME" "$MACOS_DIR/panda-cli"
 
 cat > "$CONTENTS_DIR/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -150,7 +108,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
   <key>CFBundleDisplayName</key>
   <string>$APP_NAME</string>
   <key>CFBundleExecutable</key>
-  <string>panda-cli</string>
+  <string>$APP_NAME</string>
   <key>CFBundleIconFile</key>
   <string>PandaLogo</string>
   <key>CFBundleIdentifier</key>
