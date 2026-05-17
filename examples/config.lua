@@ -63,9 +63,6 @@ return {
     desktop_4 = "option+$",
     desktop_5 = "option+%",
     desktop_6 = "option+^",
-    desktop_7 = "option+&",
-    desktop_8 = "option+*",
-    desktop_9 = "option+(",
 
     border_toggle = "alt+b",
   },

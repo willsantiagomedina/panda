@@ -782,7 +782,7 @@ pub const EventLoop = struct {
         const proportional_x = if (self.current_screen.width > 0) (info.frame.x - self.current_screen.x) / self.current_screen.width else 0;
         const proportional_y = if (self.current_screen.height > 0) (info.frame.y - self.current_screen.y) / self.current_screen.height else 0;
         const geometry: workspaces.HiddenGeometry = .{ .frame = info.frame, .screen = self.current_screen, .proportional_x = @max(0, @min(1, proportional_x)), .proportional_y = @max(0, @min(1, proportional_y)) };
-        ax.setWindowPosition(info.element, self.current_screen.x + self.current_screen.width + 8, self.current_screen.y + self.current_screen.height - info.frame.height - 8) catch return;
+        ax.setWindowPosition(info.element, hiddenWindowX(info.frame), hiddenWindowY(info.frame)) catch return;
         self.workspace_manager.setHidden(window_id, true, geometry);
     }
 
@@ -1312,6 +1312,14 @@ test "desktop workspace transitions wrap and move focused window" {
     }, .{ .move_to = 7 });
     try std.testing.expectEqual(@as(u8, 2), indexed.active_workspace);
     try std.testing.expectEqual(@as(u8, 7), indexed.focused_workspace.?);
+}
+
+fn hiddenWindowX(frame: state.Rect) f64 {
+    return -10000.0 - frame.width;
+}
+
+fn hiddenWindowY(frame: state.Rect) f64 {
+    return -10000.0 - frame.height;
 }
 
 fn rectCenter(rect: state.Rect) state.Rect {

@@ -173,7 +173,7 @@ fn appendDesktopBindings(
 }
 
 fn appendDefaultOptionDesktopHotkeys(result: *std.ArrayList(HotkeyBinding)) void {
-    const number_keys = [_]u16{ 18, 19, 20, 21, 23, 22, 26, 28, 25 };
+    const number_keys = [_]u16{ 18, 19, 20, 21, 23, 22 };
     for (number_keys, 0..) |key_code, index| {
         const action = desktopActionForIndex(index + 1).?;
         if (findAction(result.items, action)) |existing| {
