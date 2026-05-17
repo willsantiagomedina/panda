@@ -21,15 +21,15 @@ pub const DesktopBindings = struct {
     move_prev: KeyChord = .{ .key_code = key_left_arrow, .modifiers = mod_control | mod_shift },
     move_next: KeyChord = .{ .key_code = key_right_arrow, .modifiers = mod_control | mod_shift },
     switch_to: [9]KeyChord = .{
-        .{ .key_code = 18, .modifiers = mod_option | mod_shift },
-        .{ .key_code = 19, .modifiers = mod_option | mod_shift },
-        .{ .key_code = 20, .modifiers = mod_option | mod_shift },
-        .{ .key_code = 21, .modifiers = mod_option | mod_shift },
-        .{ .key_code = 23, .modifiers = mod_option | mod_shift },
-        .{ .key_code = 22, .modifiers = mod_option | mod_shift },
-        .{ .key_code = 26, .modifiers = mod_option | mod_shift },
-        .{ .key_code = 28, .modifiers = mod_option | mod_shift },
-        .{ .key_code = 25, .modifiers = mod_option | mod_shift },
+        .{ .key_code = 18, .modifiers = mod_control },
+        .{ .key_code = 19, .modifiers = mod_control },
+        .{ .key_code = 20, .modifiers = mod_control },
+        .{ .key_code = 21, .modifiers = mod_control },
+        .{ .key_code = 23, .modifiers = mod_control },
+        .{ .key_code = 22, .modifiers = mod_control },
+        .{ .key_code = 26, .modifiers = mod_control },
+        .{ .key_code = 28, .modifiers = mod_control },
+        .{ .key_code = 25, .modifiers = mod_control },
     },
     move_to: [9]KeyChord = .{
         .{ .key_code = 18, .modifiers = mod_control | mod_shift },
@@ -123,6 +123,7 @@ pub fn buildBindings(
     errdefer result.deinit(allocator);
 
     try appendDesktopBindings(&result, allocator, desktop);
+    appendDefaultOptionDesktopHotkeys(&result);
 
     for (configured) |binding| {
         if (findAction(result.items, binding.action)) |index| {
@@ -168,6 +169,16 @@ fn appendDesktopBindings(
             .action = desktopMoveActionForIndex(index + 1).?,
             .chord = chord,
         });
+    }
+}
+
+fn appendDefaultOptionDesktopHotkeys(result: *std.ArrayList(HotkeyBinding)) void {
+    const number_keys = [_]u16{ 18, 19, 20, 21, 23, 22, 26, 28, 25 };
+    for (number_keys, 0..) |key_code, index| {
+        const action = desktopActionForIndex(index + 1).?;
+        if (findAction(result.items, action)) |existing| {
+            result.items[existing].chord = .{ .key_code = key_code, .modifiers = mod_option | mod_shift };
+        }
     }
 }
 
