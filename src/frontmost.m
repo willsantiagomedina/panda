@@ -716,6 +716,17 @@ static bool PandaSetDesktopSpace(uint64_t space_id, NSString *display_uuid) {
     return set_space(main_connection(), (__bridge CFStringRef)display_uuid, space_id) == 0;
 }
 
+bool pandaGetDesktopState(int *out_active_index, int *out_count) {
+    @autoreleasepool {
+        NSUInteger active_index = NSNotFound;
+        NSArray<NSNumber *> *ids = PandaCopyDesktopSpaceIds(NULL, &active_index);
+        if (ids.count == 0 || active_index == NSNotFound) return false;
+        if (out_active_index != NULL) *out_active_index = (int)active_index + 1;
+        if (out_count != NULL) *out_count = (int)ids.count;
+        return true;
+    }
+}
+
 bool pandaSwitchDesktopRelative(int direction) {
     @autoreleasepool {
         NSString *display_uuid = nil;

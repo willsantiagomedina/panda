@@ -63,6 +63,7 @@ void pandaSetBordersVisible(bool visible);
 pid_t pandaCurrentProcessId(void);
 
 // Desktop and keyboard helpers
+bool pandaGetDesktopState(int *out_active_index, int *out_count);
 bool pandaSwitchDesktopRelative(int direction);
 bool pandaSwitchDesktopIndex(int desktop_index);
 bool pandaPostKeyChord(uint16_t key_code, uint32_t modifiers);

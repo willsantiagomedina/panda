@@ -225,6 +225,18 @@ pub fn focusWindow(window: NativeWindowRef) Error!void {
     _ = c.AXUIElementSetAttributeValue(window, focused_attribute, c.kCFBooleanTrue);
 }
 
+pub const DesktopState = struct {
+    active_index: usize,
+    count: usize,
+};
+
+pub fn desktopState() ?DesktopState {
+    var active: c_int = 0;
+    var count: c_int = 0;
+    if (!c.pandaGetDesktopState(&active, &count) or active <= 0 or count <= 0) return null;
+    return .{ .active_index = @intCast(active), .count = @intCast(count) };
+}
+
 pub fn switchDesktopRelative(direction: i32) bool {
     return c.pandaSwitchDesktopRelative(direction);
 }

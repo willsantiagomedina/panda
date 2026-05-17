@@ -662,20 +662,11 @@ pub const EventLoop = struct {
     }
 
     fn performDesktopCommand(self: *EventLoop, command: DesktopCommand) !void {
-        const handled = switch (command) {
-            .next => ax.switchDesktopRelative(1),
-            .prev => ax.switchDesktopRelative(-1),
-            .switch_to => |index| ax.switchDesktopIndex(index),
-            .move_next, .move_prev, .move_to => false,
-        };
-
-        if (!handled) {
-            const chord = desktopChordForCommand(self.options.desktop, command) orelse return;
-            self.suppress_hotkey_action = hotkeyActionForDesktopCommand(command);
-            self.suppress_hotkeys_until = ax.c.CFAbsoluteTimeGetCurrent() + 0.25;
-            if (!ax.postKeyChord(chord.key_code, chord.modifiers)) return error.UnexpectedAxError;
-        }
-
+        const command_to_send = resolveDesktopCommand(command) orelse command;
+        const chord = desktopChordForCommand(self.options.desktop, command_to_send) orelse return;
+        self.suppress_hotkey_action = hotkeyActionForDesktopCommand(command_to_send);
+        self.suppress_hotkeys_until = ax.c.CFAbsoluteTimeGetCurrent() + 0.25;
+        if (!ax.postKeyChord(chord.key_code, chord.modifiers)) return error.UnexpectedAxError;
         self.last_snapshot_poll_at = 0;
     }
 
@@ -1083,6 +1074,19 @@ fn nextWorkspace(active: u8) u8 {
 
 fn previousWorkspace(active: u8) u8 {
     return if (active <= 1) 9 else active - 1;
+}
+
+fn resolveDesktopCommand(command: DesktopCommand) ?DesktopCommand {
+    const current = ax.desktopState() orelse return null;
+    if (current.count == 0) return null;
+
+    return switch (command) {
+        .next => .{ .switch_to = if (current.active_index >= current.count) 1 else current.active_index + 1 },
+        .prev => .{ .switch_to = if (current.active_index <= 1) current.count else current.active_index - 1 },
+        .move_next => .{ .move_to = if (current.active_index >= current.count) 1 else current.active_index + 1 },
+        .move_prev => .{ .move_to = if (current.active_index <= 1) current.count else current.active_index - 1 },
+        .switch_to, .move_to => command,
+    };
 }
 
 fn desktopChordForCommand(desktop: hotkeys.DesktopBindings, command: DesktopCommand) ?hotkeys.KeyChord {
