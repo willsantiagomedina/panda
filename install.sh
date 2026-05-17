@@ -104,6 +104,39 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
 }
 
+cute_wait() {
+  local pid="$1"
+  local message="$2"
+  local frame=0
+  local frames=(
+    'ʕ•ᴥ•ʔ  '
+    'ʕ •ᴥ•ʔ '
+    'ʕ•ᴥ• ʔ '
+    'ʕっ•ᴥ•ʔっ'
+    'ʕづ•ᴥ•ʔづ'
+    'ʕノ•ᴥ•ʔノ'
+  )
+
+  printf '\033[?25l'
+  while kill -0 "$pid" >/dev/null 2>&1; do
+    printf '\r\033[2K\033[1;95m%s\033[0m %s' "${frames[$((frame % ${#frames[@]}))]}" "$message"
+    sleep 0.12
+    frame=$((frame + 1))
+  done
+  wait "$pid"
+  local status=$?
+  printf '\r\033[2K'
+  printf '\033[?25h'
+  return "$status"
+}
+
+run_cute() {
+  local message="$1"
+  shift
+  "$@" &
+  cute_wait "$!" "$message"
+}
+
 show_banner() {
   printf '\033[?25l'
   trap 'printf "\033[0m\033[?25h"' EXIT
@@ -139,6 +172,17 @@ EOF
     frame=$((frame + 1))
   done
 
+  printf '\033[H\033[2J'
+  printf '\033[1;95m'
+  printf '        ʕ•ᴥ•ʔ\n'
+  printf '     ＿ノ ヽ ノ＼＿\n'
+  printf '   /　`/ ⌒Ｙ⌒ Ｙ  ヽ\n'
+  printf '  ( 　(三ヽ人　 /　  |\n'
+  printf '   |　ﾉ⌒＼ ￣￣ヽ   ノ\n'
+  printf '   ヽ＿＿＿＞､＿＿／\n'
+  printf '\033[0m'
+  printf '\n\033[1;97mPanda is getting cozy in your Mac...\033[0m\n\n'
+
   printf '\033[0m\033[?25h'
   trap - EXIT
 }
@@ -151,8 +195,7 @@ download_release() {
   local archive="$PANDA_TMP_DIR/panda.tar.gz"
   rm -rf "$PANDA_TMP_DIR"
   mkdir -p "$PANDA_TMP_DIR"
-  say "panda install: downloading release artifact..." >&2
-  curl --fail --location --silent --show-error "$PANDA_DOWNLOAD_URL" -o "$archive"
+  run_cute "downloading the freshest bamboo..." curl --fail --location --silent --show-error "$PANDA_DOWNLOAD_URL" -o "$archive"
   [ -s "$archive" ] || fail "downloaded archive is empty"
   printf '%s\n' "$archive"
 }
@@ -162,7 +205,7 @@ extract_binary() {
   local extract_dir="$PANDA_TMP_DIR/extract"
   rm -rf "$extract_dir"
   mkdir -p "$extract_dir"
-  tar -xzf "$archive" -C "$extract_dir"
+  run_cute "unpacking tiny panda tools..." tar -xzf "$archive" -C "$extract_dir"
   [ -f "$extract_dir/panda" ] || fail "release archive did not contain a top-level 'panda' binary"
   chmod +x "$extract_dir/panda"
   printf '%s\n' "$extract_dir/panda"
@@ -171,7 +214,7 @@ extract_binary() {
 install_binary() {
   local binary="$1"
   mkdir -p "$PANDA_INSTALL_DIR"
-  cp "$binary" "$PANDA_INSTALL_DIR/panda"
+  run_cute "nestling panda into ~/.local/bin..." cp "$binary" "$PANDA_INSTALL_DIR/panda"
   chmod +x "$PANDA_INSTALL_DIR/panda"
   xattr -d com.apple.quarantine "$PANDA_INSTALL_DIR/panda" >/dev/null 2>&1 || true
 }
@@ -195,7 +238,7 @@ main() {
   local archive
   archive="$(download_release)"
   install_binary "$(extract_binary "$archive")"
-  "$PANDA_INSTALL_DIR/panda" install-daemon || fail "failed to install panda daemon"
+  run_cute "teaching panda to run in the background..." "$PANDA_INSTALL_DIR/panda" install-daemon || fail "failed to install panda daemon"
   finish_message
 }
 
