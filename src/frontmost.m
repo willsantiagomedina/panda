@@ -26,6 +26,16 @@ static bool gPandaBordersVisible = true;
 
 static NSMutableDictionary<NSNumber *, NSValue *> *gPandaHotkeyRefs;
 static EventHandlerRef gPandaHotkeyHandler = NULL;
+static CFMachPortRef gPandaHotkeyEventTap = NULL;
+static CFRunLoopSourceRef gPandaHotkeyEventTapSource = NULL;
+typedef struct PandaRegisteredHotkey {
+    uint32_t id;
+    uint16_t key_code;
+    uint32_t modifiers;
+    bool active;
+} PandaRegisteredHotkey;
+static PandaRegisteredHotkey gPandaRegisteredHotkeys[512];
+static const int gPandaRegisteredHotkeyCapacity = 512;
 static const int gPandaHotkeyQueueCapacity = 256;
 static uint32_t gPandaHotkeyQueue[256];
 static int gPandaHotkeyQueueRead = 0;
@@ -37,6 +47,15 @@ static UInt32 PandaToCarbonModifiers(uint32_t modifiers) {
     if ((modifiers & PANDA_MOD_CONTROL) != 0) result |= controlKey;
     if ((modifiers & PANDA_MOD_OPTION) != 0) result |= optionKey;
     if ((modifiers & PANDA_MOD_SHIFT) != 0) result |= shiftKey;
+    return result;
+}
+
+static uint32_t PandaFromEventFlags(CGEventFlags flags) {
+    uint32_t result = 0;
+    if ((flags & kCGEventFlagMaskCommand) != 0) result |= PANDA_MOD_COMMAND;
+    if ((flags & kCGEventFlagMaskControl) != 0) result |= PANDA_MOD_CONTROL;
+    if ((flags & kCGEventFlagMaskAlternate) != 0) result |= PANDA_MOD_OPTION;
+    if ((flags & kCGEventFlagMaskShift) != 0) result |= PANDA_MOD_SHIFT;
     return result;
 }
 
@@ -57,6 +76,88 @@ static void PandaPushHotkeyEvent(uint32_t hotkey_id) {
 
     gPandaHotkeyQueue[gPandaHotkeyQueueWrite] = hotkey_id;
     gPandaHotkeyQueueWrite = next;
+}
+
+static void PandaStoreRegisteredHotkey(uint32_t hotkey_id, uint16_t key_code, uint32_t modifiers) {
+    for (int i = 0; i < gPandaRegisteredHotkeyCapacity; i++) {
+        if (gPandaRegisteredHotkeys[i].active && gPandaRegisteredHotkeys[i].id == hotkey_id) {
+            gPandaRegisteredHotkeys[i].key_code = key_code;
+            gPandaRegisteredHotkeys[i].modifiers = modifiers;
+            return;
+        }
+    }
+
+    for (int i = 0; i < gPandaRegisteredHotkeyCapacity; i++) {
+        if (!gPandaRegisteredHotkeys[i].active) {
+            gPandaRegisteredHotkeys[i] = (PandaRegisteredHotkey){
+                .id = hotkey_id,
+                .key_code = key_code,
+                .modifiers = modifiers,
+                .active = true,
+            };
+            return;
+        }
+    }
+}
+
+static void PandaRemoveRegisteredHotkey(uint32_t hotkey_id) {
+    for (int i = 0; i < gPandaRegisteredHotkeyCapacity; i++) {
+        if (gPandaRegisteredHotkeys[i].active && gPandaRegisteredHotkeys[i].id == hotkey_id) {
+            gPandaRegisteredHotkeys[i].active = false;
+            return;
+        }
+    }
+}
+
+static CGEventRef PandaHotkeyEventTapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *refcon) {
+    (void)proxy;
+    (void)refcon;
+
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        if (gPandaHotkeyEventTap != NULL) {
+            CGEventTapEnable(gPandaHotkeyEventTap, true);
+        }
+        return event;
+    }
+
+    if (type != kCGEventKeyDown) return event;
+
+    const uint16_t key_code = (uint16_t)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+    const uint32_t modifiers = PandaFromEventFlags(CGEventGetFlags(event));
+
+    for (int i = 0; i < gPandaRegisteredHotkeyCapacity; i++) {
+        if (!gPandaRegisteredHotkeys[i].active) continue;
+        if (gPandaRegisteredHotkeys[i].key_code == key_code && gPandaRegisteredHotkeys[i].modifiers == modifiers) {
+            PandaPushHotkeyEvent(gPandaRegisteredHotkeys[i].id);
+            return NULL;
+        }
+    }
+
+    return event;
+}
+
+static void PandaEnsureHotkeyEventTap(void) {
+    if (gPandaHotkeyEventTap != NULL) return;
+
+    gPandaHotkeyEventTap = CGEventTapCreate(
+        kCGSessionEventTap,
+        kCGHeadInsertEventTap,
+        kCGEventTapOptionDefault,
+        CGEventMaskBit(kCGEventKeyDown),
+        PandaHotkeyEventTapCallback,
+        NULL
+    );
+    if (gPandaHotkeyEventTap == NULL) return;
+
+    gPandaHotkeyEventTapSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, gPandaHotkeyEventTap, 0);
+    if (gPandaHotkeyEventTapSource == NULL) {
+        CFRelease(gPandaHotkeyEventTap);
+        gPandaHotkeyEventTap = NULL;
+        return;
+    }
+
+    CFRunLoopAddSource(CFRunLoopGetCurrent(), gPandaHotkeyEventTapSource, kCFRunLoopCommonModes);
+    CGEventTapEnable(gPandaHotkeyEventTap, true);
 }
 
 static int PandaDrainHotkeyEvents(uint32_t *out_hotkey_ids, int capacity) {
@@ -792,6 +893,8 @@ void pandaHotkeysInitialize(void) {
             gPandaHotkeyRefs = [[NSMutableDictionary alloc] init];
         }
 
+        PandaEnsureHotkeyEventTap();
+
         if (gPandaHotkeyHandler == NULL) {
             EventTypeSpec spec = {
                 .eventClass = kEventClassKeyboard,
@@ -824,6 +927,7 @@ bool pandaRegisterHotkey(uint32_t hotkey_id, uint16_t key_code, uint32_t modifie
                 UnregisterEventHotKey(existing_ref);
             }
             [gPandaHotkeyRefs removeObjectForKey:key];
+            PandaRemoveRegisteredHotkey(hotkey_id);
         }
 
         EventHotKeyRef hotkey_ref = NULL;
@@ -831,6 +935,8 @@ bool pandaRegisterHotkey(uint32_t hotkey_id, uint16_t key_code, uint32_t modifie
             .signature = 'pnda',
             .id = hotkey_id,
         };
+
+        PandaStoreRegisteredHotkey(hotkey_id, key_code, modifiers);
 
         const OSStatus status = RegisterEventHotKey(
             (UInt32)key_code,
@@ -860,6 +966,10 @@ void pandaClearHotkeys(void) {
                 }
             }
             [gPandaHotkeyRefs removeAllObjects];
+        }
+
+        for (int i = 0; i < gPandaRegisteredHotkeyCapacity; i++) {
+            gPandaRegisteredHotkeys[i].active = false;
         }
 
         gPandaHotkeyQueueRead = 0;
