@@ -2,7 +2,7 @@ const std = @import("std");
 const state = @import("state.zig");
 
 pub const WorkspaceId = u8;
-pub const workspace_count = 9;
+pub const workspace_count = 6;
 
 pub const HiddenGeometry = struct {
     frame: state.Rect,
@@ -177,9 +177,9 @@ test "workspace manager basic operations" {
     try std.testing.expectEqual(@as(WorkspaceId, 1), wm.active);
     try wm.ensureWindow(10, 1, .{ .x = 0, .y = 0, .width = 100, .height = 100 }, false);
     try std.testing.expectEqual(@as(usize, 1), wm.activeWindowIds().len);
-    try wm.switchTo(9);
+    try wm.switchTo(6);
     try std.testing.expectEqual(@as(WorkspaceId, 1), wm.next());
-    try wm.moveWindowTo(10, 9);
+    try wm.moveWindowTo(10, 6);
     try std.testing.expect(wm.isActiveWindow(10));
     try wm.replaceActiveOrder(&.{10});
     try wm.removeMissing(&.{});

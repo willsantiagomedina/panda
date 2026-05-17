@@ -738,6 +738,7 @@ pub const EventLoop = struct {
     fn switchWorkspace(self: *EventLoop, target: u8) !void {
         const old = self.workspace_manager.active;
         if (old == target) return;
+        ax.c.pandaClearBorders();
         self.hideWorkspace(old);
         try self.workspace_manager.switchTo(target);
         self.unhideWorkspace(target);
@@ -777,8 +778,20 @@ pub const EventLoop = struct {
     }
 
     fn hideWindowById(self: *EventLoop, window_id: u64) void {
-        const current = self.current_space orelse return;
-        const info = current.windows.get(window_id) orelse return;
+        if (self.current_space) |*current| {
+            if (current.windows.get(window_id)) |info| {
+                self.hideWindowInfo(window_id, info);
+                return;
+            }
+        }
+
+        var all = state.SpaceState.init(self.allocator);
+        defer all.deinit();
+        all.loadAllTileableWindowsForRunningApps() catch return;
+        if (all.windows.get(window_id)) |info| self.hideWindowInfo(window_id, info);
+    }
+
+    fn hideWindowInfo(self: *EventLoop, window_id: u64, info: state.WindowInfo) void {
         const proportional_x = if (self.current_screen.width > 0) (info.frame.x - self.current_screen.x) / self.current_screen.width else 0;
         const proportional_y = if (self.current_screen.height > 0) (info.frame.y - self.current_screen.y) / self.current_screen.height else 0;
         const geometry: workspaces.HiddenGeometry = .{ .frame = info.frame, .screen = self.current_screen, .proportional_x = @max(0, @min(1, proportional_x)), .proportional_y = @max(0, @min(1, proportional_y)) };
@@ -1193,7 +1206,7 @@ fn parseDesktopCommand(action: []const u8) ?DesktopCommand {
 
 fn parseDesktopIndex(raw: []const u8) ?usize {
     const value = std.fmt.parseUnsigned(usize, raw, 10) catch return null;
-    if (value < 1 or value > 9) return null;
+    if (value < 1 or value > workspaces.workspace_count) return null;
     return value;
 }
 
@@ -1203,11 +1216,11 @@ fn parseDesktopMoveIndex(raw: []const u8) ?usize {
 }
 
 fn nextWorkspace(active: u8) u8 {
-    return if (active >= 9) 1 else active + 1;
+    return if (active >= workspaces.workspace_count) 1 else active + 1;
 }
 
 fn previousWorkspace(active: u8) u8 {
-    return if (active <= 1) 9 else active - 1;
+    return if (active <= 1) workspaces.workspace_count else active - 1;
 }
 
 fn resolveDesktopCommand(command: DesktopCommand) ?DesktopCommand {
@@ -1229,8 +1242,8 @@ fn desktopChordForCommand(desktop: hotkeys.DesktopBindings, command: DesktopComm
         .prev => desktop.switch_prev,
         .move_next => desktop.move_next,
         .move_prev => desktop.move_prev,
-        .switch_to => |index| if (index >= 1 and index <= 9) desktop.switch_to[index - 1] else null,
-        .move_to => |index| if (index >= 1 and index <= 9) desktop.move_to[index - 1] else null,
+        .switch_to => |index| if (index >= 1 and index <= workspaces.workspace_count) desktop.switch_to[index - 1] else null,
+        .move_to => |index| if (index >= 1 and index <= workspaces.workspace_count) desktop.move_to[index - 1] else null,
     };
 }
 
@@ -1289,8 +1302,8 @@ test "desktop command parser accepts legacy and indexed actions" {
 }
 
 test "desktop workspace transitions wrap and move focused window" {
-    try std.testing.expectEqual(@as(u8, 1), nextWorkspace(9));
-    try std.testing.expectEqual(@as(u8, 9), previousWorkspace(1));
+    try std.testing.expectEqual(@as(u8, 1), nextWorkspace(workspaces.workspace_count));
+    try std.testing.expectEqual(@as(u8, workspaces.workspace_count), previousWorkspace(1));
 
     const switched = applyDesktopTransition(.{
         .active_workspace = 1,
@@ -1300,8 +1313,8 @@ test "desktop workspace transitions wrap and move focused window" {
     try std.testing.expectEqual(@as(u8, 1), switched.focused_workspace.?);
 
     const moved = applyDesktopTransition(.{
-        .active_workspace = 9,
-        .focused_workspace = 9,
+        .active_workspace = workspaces.workspace_count,
+        .focused_workspace = workspaces.workspace_count,
     }, .move_next);
     try std.testing.expectEqual(@as(u8, 9), moved.active_workspace);
     try std.testing.expectEqual(@as(u8, 1), moved.focused_workspace.?);

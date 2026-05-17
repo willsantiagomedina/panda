@@ -272,7 +272,7 @@ fn isValidDesktopAction(action: []const u8) bool {
 
 fn parseDesktopIndex(raw: []const u8) ?usize {
     const parsed = std.fmt.parseUnsigned(usize, raw, 10) catch return null;
-    if (parsed < 1 or parsed > 9) return null;
+    if (parsed < 1 or parsed > 6) return null;
     return parsed;
 }
 
@@ -729,7 +729,7 @@ fn printUsage() !void {
         \\  panda focus left|right|up|down
         \\  panda swap left|right|up|down
         \\  panda border on|off|toggle|status
-        \\  panda desktop next|prev|move-next|move-prev|1..9|move-1..9|status
+        \\  panda desktop next|prev|move-next|move-prev|1..6|move-1..6|status
         \\  panda config
         \\
         \\Config:
@@ -809,9 +809,9 @@ test "desktop cli action validation" {
         "move-next",
         "move-prev",
         "1",
-        "9",
+        "6",
         "move-1",
-        "move-9",
+        "move-6",
         "status",
     }) |action| {
         try std.testing.expect(isValidDesktopAction(action));
@@ -819,8 +819,10 @@ test "desktop cli action validation" {
 
     inline for ([_][]const u8{
         "0",
+        "7",
         "10",
         "move-0",
+        "move-7",
         "move-10",
         "move",
         "desktop-1",

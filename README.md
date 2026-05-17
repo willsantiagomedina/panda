@@ -20,7 +20,7 @@ panda desktop move-2
 panda desktop status
 ```
 
-`panda desktop 1..9` are Panda-managed virtual workspaces, independent of macOS Mission Control Spaces. Inactive workspace windows are moved offscreen (not minimized) and restored/tiled when you switch back. Workspace state is in-memory and resets when the daemon restarts.
+`panda desktop 1..6` are Panda-managed virtual workspaces, independent of macOS Mission Control Spaces. Inactive workspace windows are moved offscreen (not minimized) and restored/tiled when you switch back. Workspace state is in-memory and resets when the daemon restarts.
 
 Default workspace hotkeys are Option+! through Option+^ for workspaces 1–6.
 

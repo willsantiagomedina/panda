@@ -74,12 +74,16 @@ pub const SpaceState = struct {
     }
 
     pub fn loadWindowsForPid(self: *SpaceState, pid: i32) !void {
+        try self.loadWindowsForPidOnScreen(pid, null);
+    }
+
+    pub fn loadWindowsForPidOnScreen(self: *SpaceState, pid: i32, screen: ?Rect) !void {
         const summaries = try ax.listWindows(self.allocator, pid);
         defer self.allocator.free(summaries);
 
         for (summaries) |*summary| {
             const id = ax.windowId(summary.element);
-            if (!isTileableWindow(summary.*, null)) {
+            if (!isTileableWindow(summary.*, screen)) {
                 summary.deinit(self.allocator);
                 continue;
             }
@@ -118,7 +122,7 @@ pub const SpaceState = struct {
 
     pub fn loadWindowsForScope(self: *SpaceState, scope: WindowScope, focused_pid: i32, screen: Rect) !void {
         switch (scope) {
-            .focused_app => try self.loadWindowsForPid(focused_pid),
+            .focused_app => try self.loadWindowsForPidOnScreen(focused_pid, screen),
             .all_apps_main_display => try self.loadWindowsOnCurrentSpace(screen),
         }
     }
