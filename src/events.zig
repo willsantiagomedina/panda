@@ -377,7 +377,16 @@ pub const EventLoop = struct {
 
         var active_order = std.ArrayList(u64).empty;
         defer active_order.deinit(self.allocator);
-        try active_order.appendSlice(self.allocator, space.window_order.items);
+        for (self.workspace_manager.activeWindowIds()) |window_id| {
+            if (containsWindowId(space.window_order.items, window_id)) {
+                try active_order.append(self.allocator, window_id);
+            }
+        }
+        for (space.window_order.items) |window_id| {
+            if (!containsWindowId(active_order.items, window_id)) {
+                try active_order.append(self.allocator, window_id);
+            }
+        }
 
         if (self.order_overrides.get(pid)) |override| {
             var filtered = std.ArrayList(u64).empty;
@@ -738,12 +747,18 @@ pub const EventLoop = struct {
             if (self.hasPlacement(focused)) return;
         }
 
-        const first = if (self.current_layout.items.len == 0)
+        const target = if (self.workspace_manager.recentFocus(self.workspace_manager.active)) |recent|
+            if (self.hasPlacement(recent)) recent else null
+        else
+            null;
+
+        const first = target orelse if (self.current_layout.items.len == 0)
             return
         else
             self.current_layout.items[0].window_id;
 
         try self.focusManagedWindow(first);
+        self.workspace_manager.setRecentFocus(first);
         self.focused_window_id = first;
         self.previous_focused_window_id = null;
         self.last_navigation = null;
@@ -895,7 +910,8 @@ pub const EventLoop = struct {
         if (self.order_overrides.fetchRemove(pid)) |entry| {
             self.allocator.free(entry.value);
         }
-        try self.order_overrides.put(pid, reordered);
+        try self.workspace_manager.replaceActiveOrder(reordered);
+        self.allocator.free(reordered);
     }
 
     fn focusManagedWindow(self: *EventLoop, window_id: u64) !void {

@@ -110,6 +110,25 @@ pub const WorkspaceManager = struct {
         return self.workspacePtr(self.active).window_order.items;
     }
 
+    pub fn replaceActiveOrder(self: *WorkspaceManager, preferred_order: []const u64) !void {
+        const order = &self.workspacePtr(self.active).window_order;
+        var reordered = std.ArrayList(u64).empty;
+        defer reordered.deinit(self.allocator);
+
+        for (preferred_order) |window_id| {
+            const managed = self.windows.get(window_id) orelse continue;
+            if (managed.workspace != self.active or contains(reordered.items, window_id)) continue;
+            try reordered.append(self.allocator, window_id);
+        }
+
+        for (order.items) |window_id| {
+            if (!contains(reordered.items, window_id)) try reordered.append(self.allocator, window_id);
+        }
+
+        order.clearRetainingCapacity();
+        try order.appendSlice(self.allocator, reordered.items);
+    }
+
     pub fn isActiveWindow(self: *WorkspaceManager, window_id: u64) bool {
         const managed = self.windows.get(window_id) orelse return false;
         return managed.workspace == self.active and !managed.hidden;
@@ -162,6 +181,7 @@ test "workspace manager basic operations" {
     try std.testing.expectEqual(@as(WorkspaceId, 1), wm.next());
     try wm.moveWindowTo(10, 9);
     try std.testing.expect(wm.isActiveWindow(10));
+    try wm.replaceActiveOrder(&.{10});
     try wm.removeMissing(&.{});
     try std.testing.expectEqual(@as(usize, 0), wm.windows.count());
 }
