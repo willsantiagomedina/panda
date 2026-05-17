@@ -117,6 +117,12 @@ fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) 
         return;
     }
 
+    if (std.mem.eql(u8, command, "update")) {
+        if (args.next() != null) return error.InvalidArguments;
+        try updateApp(allocator);
+        return;
+    }
+
     var loaded_config = try config.load(allocator);
     defer loaded_config.deinit(allocator);
 
@@ -328,6 +334,36 @@ fn uninstallDaemon(allocator: std.mem.Allocator) !void {
         else => return err,
     };
     std.debug.print("panda daemon uninstalled.\n", .{});
+}
+
+fn updateApp(allocator: std.mem.Allocator) !void {
+    const script =
+        \\set -euo pipefail
+        \\DMG_URL="${PANDA_DMG_URL:-https://givepanda.tech/releases/latest/panda-macos-universal.dmg}"
+        \\TMP_DIR="$(mktemp -d)"
+        \\cleanup() {
+        \\  hdiutil detach "$TMP_DIR/mount" >/dev/null 2>&1 || true
+        \\  rm -rf "$TMP_DIR"
+        \\}
+        \\trap cleanup EXIT
+        \\echo "panda update: downloading latest app..."
+        \\curl -fsSL "$DMG_URL" -o "$TMP_DIR/panda.dmg"
+        \\mkdir -p "$TMP_DIR/mount"
+        \\hdiutil attach "$TMP_DIR/panda.dmg" -mountpoint "$TMP_DIR/mount" -nobrowse -quiet
+        \\test -d "$TMP_DIR/mount/Panda.app"
+        \\echo "panda update: stopping daemon..."
+        \\/Applications/Panda.app/Contents/MacOS/panda-cli uninstall-daemon >/dev/null 2>&1 || true
+        \\pkill -f '/Applications/Panda.app/Contents/MacOS/panda-cli daemon' >/dev/null 2>&1 || true
+        \\echo "panda update: replacing /Applications/Panda.app..."
+        \\rm -rf /Applications/Panda.app
+        \\cp -R "$TMP_DIR/mount/Panda.app" /Applications/Panda.app
+        \\xattr -dr com.apple.quarantine /Applications/Panda.app >/dev/null 2>&1 || true
+        \\echo "panda update: restarting daemon..."
+        \\/Applications/Panda.app/Contents/MacOS/panda-cli install-daemon
+        \\echo "panda update: done"
+    ;
+
+    try expectProcess(allocator, &.{ "/bin/zsh", "-lc", script }, "update Panda.app");
 }
 
 fn daemonStatus(allocator: std.mem.Allocator) !void {
@@ -576,6 +612,7 @@ fn printUsage() !void {
         \\  panda install-daemon
         \\  panda uninstall-daemon
         \\  panda daemon-status
+        \\  panda update
         \\  panda permissions
         \\  panda focus left|right|up|down
         \\  panda swap left|right|up|down

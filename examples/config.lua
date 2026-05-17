@@ -29,6 +29,15 @@ return {
     switch_next = "ctrl+right",
     move_prev = "ctrl+shift+left",
     move_next = "ctrl+shift+right",
+    switch_1 = "option+!",
+    switch_2 = "option+@",
+    switch_3 = "option+#",
+    switch_4 = "option+$",
+    switch_5 = "option+%",
+    switch_6 = "option+^",
+    switch_7 = "option+&",
+    switch_8 = "option+*",
+    switch_9 = "option+(",
   },
 
   -- Optional global hotkeys handled directly by panda daemon.
