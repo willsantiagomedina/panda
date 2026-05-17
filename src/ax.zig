@@ -6,10 +6,6 @@ pub const c = @cImport({
     @cInclude("ApplicationServices/ApplicationServices.h");
     @cInclude("CoreFoundation/CoreFoundation.h");
     @cInclude("frontmost.h");
-    @cInclude("sys/socket.h");
-    @cInclude("sys/un.h");
-    @cInclude("fcntl.h");
-    @cInclude("unistd.h");
     @cInclude("libproc.h");
 });
 

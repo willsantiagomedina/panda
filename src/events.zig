@@ -36,18 +36,21 @@ pub fn sendControlCommand(allocator: std.mem.Allocator, command: []const u8) ![]
     const socket_path = try controlSocketPath(allocator);
     defer allocator.free(socket_path);
 
-    const stream = connectUnixSocket(socket_path) catch return CommandError.DaemonUnavailable;
-    defer _ = ax.c.close(stream);
+    var stream = std.net.connectUnixSocket(socket_path) catch return CommandError.DaemonUnavailable;
+    defer stream.close();
 
-    _ = try writeFd(stream, command);
-    _ = try writeFd(stream, "\n");
+    _ = try std.posix.write(stream.handle, command);
+    _ = try std.posix.write(stream.handle, "\n");
 
     var response = std.ArrayList(u8).empty;
     defer response.deinit(allocator);
 
     var buffer: [256]u8 = undefined;
     while (true) {
-        const read = readFd(stream, &buffer) catch break;
+        const read = stream.read(&buffer) catch |err| switch (err) {
+            error.WouldBlock => break,
+            else => return err,
+        };
         if (read == 0) break;
         try response.appendSlice(allocator, buffer[0..read]);
     }
@@ -79,7 +82,7 @@ pub const EventLoop = struct {
     notifications_enabled: bool = false,
     relayout_pending: bool = false,
     border_enabled: bool = true,
-    control_socket_fd: ?c_int = null,
+    control_socket_fd: ?std.posix.socket_t = null,
     control_socket_path: ?[]u8 = null,
     order_overrides: std.AutoHashMap(i32, []u64),
     workspace_manager: workspaces.WorkspaceManager,
@@ -558,8 +561,16 @@ pub const EventLoop = struct {
             else => return err,
         };
 
-        const listener = try createUnixListener(socket_path);
-        errdefer _ = ax.c.close(listener);
+        const listener = try std.posix.socket(
+            std.posix.AF.UNIX,
+            std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC | std.posix.SOCK.NONBLOCK,
+            0,
+        );
+        errdefer std.posix.close(listener);
+
+        var address = try std.net.Address.initUnix(socket_path);
+        try std.posix.bind(listener, &address.any, address.getOsSockLen());
+        try std.posix.listen(listener, 8);
 
         self.control_socket_fd = listener;
         self.control_socket_path = socket_path;
@@ -567,7 +578,7 @@ pub const EventLoop = struct {
 
     fn teardownControlSocket(self: *EventLoop) void {
         if (self.control_socket_fd) |fd| {
-            _ = ax.c.close(fd);
+            std.posix.close(fd);
             self.control_socket_fd = null;
         }
         if (self.control_socket_path) |path| {
@@ -581,7 +592,7 @@ pub const EventLoop = struct {
         const listener = self.control_socket_fd orelse return;
 
         while (true) {
-            const client = acceptFd(listener) catch |err| switch (err) {
+            const client = std.posix.accept(listener, null, null, std.posix.SOCK.CLOEXEC | std.posix.SOCK.NONBLOCK) catch |err| switch (err) {
                 error.WouldBlock => return,
                 else => {
                     log.err("control accept failed: {s}", .{@errorName(err)});
@@ -775,14 +786,14 @@ pub const EventLoop = struct {
         self.last_navigation = null;
     }
 
-    fn handleClient(self: *EventLoop, client: c_int) void {
-        defer _ = ax.c.close(client);
+    fn handleClient(self: *EventLoop, client: std.posix.socket_t) void {
+        defer std.posix.close(client);
 
         var buffer: [max_command_length]u8 = undefined;
-        const read = readFd(client, &buffer) catch |err| switch (err) {
+        const read = std.posix.read(client, &buffer) catch |err| switch (err) {
             error.WouldBlock => return,
             else => {
-                _ = writeFd(client, "error: failed to read command\n") catch {};
+                _ = std.posix.write(client, "error: failed to read command\n") catch {};
                 log.err("control read failed: {s}", .{@errorName(err)});
                 return;
             },
@@ -796,7 +807,7 @@ pub const EventLoop = struct {
             CommandError.InvalidCommand => "error: invalid command\n",
             else => "error: command failed\n",
         };
-        _ = writeFd(client, response) catch {};
+        _ = std.posix.write(client, response) catch {};
     }
 
     fn executeControlCommand(self: *EventLoop, raw: []const u8) ![]const u8 {
@@ -1138,54 +1149,6 @@ fn registerNotification(
         },
     };
     return true;
-}
-
-fn connectUnixSocket(path: []const u8) !c_int {
-    const fd = ax.c.socket(ax.c.AF_UNIX, ax.c.SOCK_STREAM, 0);
-    if (fd < 0) return error.UnexpectedAxError;
-    errdefer _ = ax.c.close(fd);
-    var addr: ax.c.sockaddr_un = undefined;
-    @memset(std.mem.asBytes(&addr), 0);
-    addr.sun_family = ax.c.AF_UNIX;
-    if (path.len >= addr.sun_path.len) return error.NameTooLong;
-    @memcpy(addr.sun_path[0..path.len], path);
-    addr.sun_path[path.len] = 0;
-    if (ax.c.connect(fd, @ptrCast(&addr), @sizeOf(ax.c.sockaddr_un)) != 0) return error.UnexpectedAxError;
-    return fd;
-}
-
-fn createUnixListener(path: []const u8) !c_int {
-    const fd = ax.c.socket(ax.c.AF_UNIX, ax.c.SOCK_STREAM | ax.c.SOCK_CLOEXEC | ax.c.SOCK_NONBLOCK, 0);
-    if (fd < 0) return error.UnexpectedAxError;
-    errdefer _ = ax.c.close(fd);
-    var addr: ax.c.sockaddr_un = undefined;
-    @memset(std.mem.asBytes(&addr), 0);
-    addr.sun_family = ax.c.AF_UNIX;
-    if (path.len >= addr.sun_path.len) return error.NameTooLong;
-    @memcpy(addr.sun_path[0..path.len], path);
-    addr.sun_path[path.len] = 0;
-    if (ax.c.bind(fd, @ptrCast(&addr), @sizeOf(ax.c.sockaddr_un)) != 0) return error.UnexpectedAxError;
-    if (ax.c.listen(fd, 8) != 0) return error.UnexpectedAxError;
-    return fd;
-}
-
-fn acceptFd(listener: c_int) !c_int {
-    const fd = ax.c.accept(listener, null, null);
-    if (fd < 0) return error.WouldBlock;
-    _ = ax.c.fcntl(fd, ax.c.F_SETFL, ax.c.O_NONBLOCK);
-    return fd;
-}
-
-fn readFd(fd: c_int, buffer: []u8) !usize {
-    const result = ax.c.read(fd, buffer.ptr, buffer.len);
-    if (result < 0) return error.WouldBlock;
-    return @intCast(result);
-}
-
-fn writeFd(fd: c_int, bytes: []const u8) !usize {
-    const result = ax.c.write(fd, bytes.ptr, bytes.len);
-    if (result < 0) return error.UnexpectedAxError;
-    return @intCast(result);
 }
 
 fn parseDirection(raw: []const u8) ?ax.Direction {

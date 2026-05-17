@@ -233,7 +233,9 @@ fn launchAppDaemon(allocator: std.mem.Allocator) !void {
         return;
     }
 
-    const quoted_exe = try shellQuote(allocator, exe_path);
+    const daemon_exe = try daemonExecutablePath(allocator, exe_path);
+    defer allocator.free(daemon_exe);
+    const quoted_exe = try shellQuote(allocator, daemon_exe);
     defer allocator.free(quoted_exe);
 
     if (!ax.isProcessTrusted()) {
@@ -254,6 +256,15 @@ fn launchAppDaemon(allocator: std.mem.Allocator) !void {
     _ = try runProcess(allocator, &.{ "/bin/zsh", "-lc", script });
 }
 
+fn daemonExecutablePath(allocator: std.mem.Allocator, exe_path: []const u8) ![]u8 {
+    if (std.mem.endsWith(u8, exe_path, "/Contents/MacOS/Panda")) {
+        const cli_path = try std.mem.concat(allocator, u8, &.{ exe_path[0 .. exe_path.len - "Panda".len], "panda-cli" });
+        if (isExecutableFile(cli_path)) return cli_path;
+        allocator.free(cli_path);
+    }
+    return allocator.dupe(u8, exe_path);
+}
+
 fn appBundleRoot(exe_path: []const u8) ?[]const u8 {
     const marker = "/Contents/MacOS/";
     const index = std.mem.indexOf(u8, exe_path, marker) orelse return null;
@@ -265,6 +276,7 @@ fn isValidDesktopAction(action: []const u8) bool {
         std.mem.eql(u8, action, "prev") or
         std.mem.eql(u8, action, "move-next") or
         std.mem.eql(u8, action, "move-prev") or
+        std.mem.eql(u8, action, "status") or
         parseDesktopIndex(action) != null or
         parseDesktopMoveIndex(action) != null;
 }
@@ -728,7 +740,7 @@ fn printUsage() !void {
         \\  panda focus left|right|up|down
         \\  panda swap left|right|up|down
         \\  panda border on|off|toggle|status
-        \\  panda desktop next|prev|move-next|move-prev|1..9|move-1..9
+        \\  panda desktop next|prev|move-next|move-prev|1..9|move-1..9|status
         \\  panda config
         \\
         \\Config:
@@ -811,6 +823,7 @@ test "desktop cli action validation" {
         "9",
         "move-1",
         "move-9",
+        "status",
     }) |action| {
         try std.testing.expect(isValidDesktopAction(action));
     }
