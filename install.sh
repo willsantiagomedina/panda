@@ -117,16 +117,16 @@ cute_wait() {
     'ʕノ•ᴥ•ʔノ'
   )
 
-  printf '\033[?25l'
+  printf '\033[?25l' >&2
   while kill -0 "$pid" >/dev/null 2>&1; do
-    printf '\r\033[2K\033[1;95m%s\033[0m %s' "${frames[$((frame % ${#frames[@]}))]}" "$message"
+    printf '\r\033[2K\033[1;95m%s\033[0m %s' "${frames[$((frame % ${#frames[@]}))]}" "$message" >&2
     sleep 0.12
     frame=$((frame + 1))
   done
   wait "$pid"
   local status=$?
-  printf '\r\033[2K'
-  printf '\033[?25h'
+  printf '\r\033[2K' >&2
+  printf '\033[?25h' >&2
   return "$status"
 }
 
