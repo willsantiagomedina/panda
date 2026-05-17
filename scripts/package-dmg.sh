@@ -150,7 +150,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
   <key>CFBundleDisplayName</key>
   <string>$APP_NAME</string>
   <key>CFBundleExecutable</key>
-  <string>$APP_NAME</string>
+  <string>panda-cli</string>
   <key>CFBundleIconFile</key>
   <string>PandaLogo</string>
   <key>CFBundleIdentifier</key>

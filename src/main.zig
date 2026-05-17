@@ -18,7 +18,12 @@ pub fn main() !void {
     defer args.deinit();
 
     _ = args.next();
-    const command = args.next() orelse "help";
+    const maybe_command = args.next();
+    if (maybe_command == null and try isRunningFromAppBundle(allocator)) {
+        try launchAppDaemon(allocator);
+        return;
+    }
+    const command = maybe_command orelse "help";
 
     if (std.mem.eql(u8, command, "help")) {
         try printUsage();
@@ -199,6 +204,35 @@ fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) 
     }
 
     return error.InvalidArguments;
+}
+
+fn isRunningFromAppBundle(allocator: std.mem.Allocator) !bool {
+    const path = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(path);
+    return std.mem.indexOf(u8, path, "/Panda.app/Contents/MacOS/") != null;
+}
+
+fn launchAppDaemon(allocator: std.mem.Allocator) !void {
+    const exe_path = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(exe_path);
+    const quoted_exe = try shellQuote(allocator, exe_path);
+    defer allocator.free(quoted_exe);
+
+    const script = try std.fmt.allocPrint(allocator,
+        \\set -euo pipefail
+        \\LOG_DIR="$HOME/Library/Logs"
+        \\mkdir -p "$LOG_DIR"
+        \\if ! {0s} permissions >/dev/null 2>&1; then
+        \\  {0s} permissions >/dev/null 2>&1 || true
+        \\  exit 0
+        \\fi
+        \\{0s} uninstall-daemon >/dev/null 2>&1 || true
+        \\pkill -f '/Applications/Panda.app/Contents/MacOS/panda-cli daemon' >/dev/null 2>&1 || true
+        \\nohup {0s} daemon >>"$LOG_DIR/panda.log" 2>>"$LOG_DIR/panda.err.log" &
+    , .{quoted_exe});
+    defer allocator.free(script);
+
+    _ = try runProcess(allocator, &.{ "/bin/zsh", "-lc", script });
 }
 
 fn isValidDesktopAction(action: []const u8) bool {
@@ -461,6 +495,21 @@ fn expectProcessInherit(allocator: std.mem.Allocator, argv: []const []const u8, 
     }
     std.debug.print("panda failed to {s}.\n", .{action});
     return error.LaunchAgentFailed;
+}
+
+fn shellQuote(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    var quoted = std.ArrayList(u8){};
+    defer quoted.deinit(allocator);
+    try quoted.append(allocator, '\'');
+    for (value) |byte| {
+        if (byte == '\'') {
+            try quoted.appendSlice(allocator, "'\\''");
+        } else {
+            try quoted.append(allocator, byte);
+        }
+    }
+    try quoted.append(allocator, '\'');
+    return quoted.toOwnedSlice(allocator);
 }
 
 fn xmlEscape(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
