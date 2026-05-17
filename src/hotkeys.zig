@@ -254,6 +254,7 @@ pub fn parseKeyChord(raw_value: []const u8) ?KeyChord {
 
         const key_code = parseKeyCode(token) orelse return null;
         chord.key_code = key_code;
+        if (isShiftedSymbol(token)) chord.modifiers |= mod_shift;
         has_key = true;
     }
 
@@ -276,6 +277,13 @@ fn parseModifier(token: []const u8) ?u32 {
     }
 
     return null;
+}
+
+fn isShiftedSymbol(token: []const u8) bool {
+    return token.len == 1 and switch (token[0]) {
+        '!', '@', '#', '$', '%', '^', '&', '*', '(', ')' => true,
+        else => false,
+    };
 }
 
 fn parseKeyCode(token: []const u8) ?u16 {
@@ -425,7 +433,7 @@ test "parse key chords and action aliases" {
 
     const bang = parseKeyChord("cmd+!").?;
     try std.testing.expectEqual(@as(u16, 18), bang.key_code);
-    try std.testing.expectEqual(mod_command, bang.modifiers);
+    try std.testing.expectEqual(mod_command | mod_shift, bang.modifiers);
     try std.testing.expectEqual(@as(u16, 19), parseKeyChord("cmd+@").?.key_code);
     try std.testing.expectEqual(@as(u16, 20), parseKeyChord("cmd+#").?.key_code);
     try std.testing.expectEqual(@as(u16, 21), parseKeyChord("cmd+$").?.key_code);

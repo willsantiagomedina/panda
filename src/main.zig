@@ -233,9 +233,7 @@ fn launchAppDaemon(allocator: std.mem.Allocator) !void {
         return;
     }
 
-    const daemon_exe = try daemonExecutablePath(allocator, exe_path);
-    defer allocator.free(daemon_exe);
-    const quoted_exe = try shellQuote(allocator, daemon_exe);
+    const quoted_exe = try shellQuote(allocator, exe_path);
     defer allocator.free(quoted_exe);
 
     if (!ax.isProcessTrusted()) {
@@ -254,15 +252,6 @@ fn launchAppDaemon(allocator: std.mem.Allocator) !void {
     defer allocator.free(script);
 
     _ = try runProcess(allocator, &.{ "/bin/zsh", "-lc", script });
-}
-
-fn daemonExecutablePath(allocator: std.mem.Allocator, exe_path: []const u8) ![]u8 {
-    if (std.mem.endsWith(u8, exe_path, "/Contents/MacOS/Panda")) {
-        const cli_path = try std.mem.concat(allocator, u8, &.{ exe_path[0 .. exe_path.len - "Panda".len], "panda-cli" });
-        if (isExecutableFile(cli_path)) return cli_path;
-        allocator.free(cli_path);
-    }
-    return allocator.dupe(u8, exe_path);
 }
 
 fn appBundleRoot(exe_path: []const u8) ?[]const u8 {
