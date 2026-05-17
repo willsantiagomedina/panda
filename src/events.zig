@@ -90,6 +90,7 @@ pub const EventLoop = struct {
     last_observed_change_at: f64 = 0,
     last_relayout_at: f64 = 0,
     desktop_status_buffer: [384]u8 = undefined,
+    force_full_workspace_scan: bool = false,
     suppress_hotkey_action: ?hotkeys.HotkeyAction = null,
     suppress_hotkeys_until: f64 = 0,
 
@@ -351,7 +352,26 @@ pub const EventLoop = struct {
             .height = screen_bounds.height,
         };
 
-        space.loadAllTileableWindowsForRunningApps() catch |err| switch (err) {
+        const load_all_tileable = self.force_full_workspace_scan;
+        self.force_full_workspace_scan = false;
+
+        if (load_all_tileable) {
+            space.loadAllTileableWindowsForRunningApps() catch |err| switch (err) {
+                error.AppUnresponsive,
+                error.AttributeUnsupported,
+                error.InvalidPid,
+                error.UnsupportedTarget,
+                error.UnexpectedAxError,
+                => {
+                    self.last_snapshot = .{};
+                    self.clearCurrentSpace();
+                    self.current_layout.clearRetainingCapacity();
+                    self.syncBorders();
+                    return;
+                },
+                else => return err,
+            };
+        } else space.loadWindowsForScope(self.options.scope, pid, screen) catch |err| switch (err) {
             error.AppUnresponsive,
             error.AttributeUnsupported,
             error.InvalidPid,
@@ -721,6 +741,7 @@ pub const EventLoop = struct {
         self.hideWorkspace(old);
         try self.workspace_manager.switchTo(target);
         self.unhideWorkspace(target);
+        self.force_full_workspace_scan = true;
         self.last_snapshot_poll_at = 0;
         if (self.current_pid) |pid| try self.relayoutPid(pid);
     }
@@ -732,6 +753,7 @@ pub const EventLoop = struct {
             self.hideWindowById(focused);
             self.focused_window_id = null;
         }
+        self.force_full_workspace_scan = true;
         if (self.current_pid) |pid| try self.relayoutPid(pid);
     }
 
