@@ -91,6 +91,7 @@ pub const EventLoop = struct {
     last_relayout_at: f64 = 0,
     desktop_status_buffer: [384]u8 = undefined,
     force_full_workspace_scan: bool = false,
+    restoring_workspace: ?workspaces.WorkspaceId = null,
     suppress_hotkey_action: ?hotkeys.HotkeyAction = null,
     suppress_hotkeys_until: f64 = 0,
 
@@ -460,6 +461,8 @@ pub const EventLoop = struct {
             => return,
             else => return err,
         };
+        for (placements) |placement| self.workspace_manager.markVisible(placement.window_id, placement.frame);
+        self.restoring_workspace = null;
 
         try self.replaceCurrentSpace(space, screen, placements);
         self.last_snapshot = snapshotForWindowIds(self.current_space.?.window_order.items);
@@ -730,7 +733,13 @@ pub const EventLoop = struct {
         var allowed = std.AutoHashMap(u64, void).init(self.allocator);
         defer allowed.deinit();
         for (self.workspace_manager.activeWindowIds()) |id| {
-            if (self.workspace_manager.isActiveWindow(id)) try allowed.put(id, {});
+            if (self.workspace_manager.isActiveWindow(id) or
+                (self.restoring_workspace != null and
+                    self.restoring_workspace.? == self.workspace_manager.active and
+                    self.workspace_manager.isActiveWorkspaceWindow(id)))
+            {
+                try allowed.put(id, {});
+            }
         }
         try space.retainOnlyWindowIds(&allowed);
     }
@@ -741,7 +750,7 @@ pub const EventLoop = struct {
         ax.c.pandaClearBorders();
         self.hideWorkspace(old);
         try self.workspace_manager.switchTo(target);
-        self.unhideWorkspace(target);
+        self.restoring_workspace = target;
         self.force_full_workspace_scan = true;
         self.last_snapshot_poll_at = 0;
         if (self.current_pid) |pid| try self.relayoutPid(pid);
@@ -771,10 +780,6 @@ pub const EventLoop = struct {
 
     fn hideWorkspace(self: *EventLoop, id: u8) void {
         for (self.workspace_manager.workspaces[id - 1].window_order.items) |window_id| self.hideWindowById(window_id);
-    }
-
-    fn unhideWorkspace(self: *EventLoop, id: u8) void {
-        for (self.workspace_manager.workspaces[id - 1].window_order.items) |window_id| self.workspace_manager.setHidden(window_id, false, null);
     }
 
     fn hideWindowById(self: *EventLoop, window_id: u64) void {

@@ -67,6 +67,7 @@ bool pandaGetDesktopState(int *out_active_index, int *out_count);
 bool pandaSwitchDesktopRelative(int direction);
 bool pandaSwitchDesktopIndex(int desktop_index);
 bool pandaPostKeyChord(uint16_t key_code, uint32_t modifiers);
+bool pandaPostUserNotification(const char *title, const char *body);
 
 // Global hotkeys
 void pandaHotkeysInitialize(void);

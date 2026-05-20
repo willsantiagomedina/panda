@@ -2,7 +2,7 @@ const std = @import("std");
 const state = @import("state.zig");
 
 pub const WorkspaceId = u8;
-pub const workspace_count = 6;
+pub const workspace_count = 9;
 
 pub const HiddenGeometry = struct {
     frame: state.Rect,
@@ -134,6 +134,19 @@ pub const WorkspaceManager = struct {
         return managed.workspace == self.active and !managed.hidden;
     }
 
+    pub fn isActiveWorkspaceWindow(self: *WorkspaceManager, window_id: u64) bool {
+        const managed = self.windows.get(window_id) orelse return false;
+        return managed.workspace == self.active;
+    }
+
+    pub fn markVisible(self: *WorkspaceManager, window_id: u64, frame: state.Rect) void {
+        if (self.windows.getPtr(window_id)) |managed| {
+            managed.hidden = false;
+            managed.hidden_geometry = null;
+            managed.last_known_frame = frame;
+        }
+    }
+
     pub fn setHidden(self: *WorkspaceManager, window_id: u64, hidden: bool, geometry: ?HiddenGeometry) void {
         if (self.windows.getPtr(window_id)) |managed| {
             managed.hidden = hidden;
@@ -177,11 +190,16 @@ test "workspace manager basic operations" {
     try std.testing.expectEqual(@as(WorkspaceId, 1), wm.active);
     try wm.ensureWindow(10, 1, .{ .x = 0, .y = 0, .width = 100, .height = 100 }, false);
     try std.testing.expectEqual(@as(usize, 1), wm.activeWindowIds().len);
-    try wm.switchTo(6);
+    try std.testing.expectEqual(@as(WorkspaceId, 9), @as(WorkspaceId, workspace_count));
+    try wm.switchTo(9);
     try std.testing.expectEqual(@as(WorkspaceId, 1), wm.next());
-    try wm.moveWindowTo(10, 6);
+    try wm.moveWindowTo(10, 9);
     try std.testing.expect(wm.isActiveWindow(10));
     try wm.replaceActiveOrder(&.{10});
+    wm.setHidden(10, true, null);
+    try wm.removeMissing(&.{});
+    try std.testing.expectEqual(@as(usize, 1), wm.windows.count());
+    wm.setHidden(10, false, null);
     try wm.removeMissing(&.{});
     try std.testing.expectEqual(@as(usize, 0), wm.windows.count());
 }

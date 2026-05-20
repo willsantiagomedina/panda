@@ -4,6 +4,7 @@ const config = @import("config.zig");
 const events = @import("events.zig");
 const layout = @import("layout.zig");
 const state = @import("state.zig");
+const workspaces = @import("workspaces.zig");
 
 const log = std.log.scoped(.panda);
 const launch_agent_label = "dev.givepanda.panda";
@@ -128,6 +129,12 @@ fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) 
         return;
     }
 
+    if (std.mem.eql(u8, command, "notify-updated")) {
+        if (args.next() != null) return error.InvalidArguments;
+        ax.postUserNotification("Panda updated", "Your new workspace powers are ready.");
+        return;
+    }
+
     var loaded_config = try config.load(allocator);
     defer loaded_config.deinit(allocator);
 
@@ -236,16 +243,12 @@ fn launchAppDaemon(allocator: std.mem.Allocator) !void {
     const quoted_exe = try shellQuote(allocator, exe_path);
     defer allocator.free(quoted_exe);
 
-    if (!ax.isProcessTrusted()) {
-        _ = ax.promptForAccessibility();
-        return;
-    }
-
     const script = try std.fmt.allocPrint(allocator,
         \\set -euo pipefail
         \\LOG_DIR="$HOME/Library/Logs"
         \\mkdir -p "$LOG_DIR"
         \\{0s} uninstall-daemon >/dev/null 2>&1 || true
+        \\pkill -f '/Applications/Panda.app/Contents/MacOS/Panda daemon' >/dev/null 2>&1 || true
         \\pkill -f '/Applications/Panda.app/Contents/MacOS/panda-cli daemon' >/dev/null 2>&1 || true
         \\nohup {0s} daemon >>"$LOG_DIR/panda.log" 2>>"$LOG_DIR/panda.err.log" &
     , .{quoted_exe});
@@ -272,7 +275,7 @@ fn isValidDesktopAction(action: []const u8) bool {
 
 fn parseDesktopIndex(raw: []const u8) ?usize {
     const parsed = std.fmt.parseUnsigned(usize, raw, 10) catch return null;
-    if (parsed < 1 or parsed > 6) return null;
+    if (parsed < 1 or parsed > workspaces.workspace_count) return null;
     return parsed;
 }
 
@@ -419,6 +422,7 @@ fn updateApp(allocator: std.mem.Allocator) !void {
         \\test -d "$TMP_DIR/mount/Panda.app"
         \\cute "putting the old panda down for a nap..."
         \\/Applications/Panda.app/Contents/MacOS/panda-cli uninstall-daemon >/dev/null 2>&1 || true
+        \\pkill -f '/Applications/Panda.app/Contents/MacOS/Panda daemon' >/dev/null 2>&1 || true
         \\pkill -f '/Applications/Panda.app/Contents/MacOS/panda-cli daemon' >/dev/null 2>&1 || true
         \\cute "moving the new panda into /Applications..."
         \\rm -rf /Applications/Panda.app
@@ -426,6 +430,7 @@ fn updateApp(allocator: std.mem.Allocator) !void {
         \\xattr -dr com.apple.quarantine /Applications/Panda.app >/dev/null 2>&1 || true
         \\cute "waking panda back up..."
         \\/Applications/Panda.app/Contents/MacOS/panda-cli install-daemon
+        \\/Applications/Panda.app/Contents/MacOS/panda-cli notify-updated >/dev/null 2>&1 || true
         \\printf "\033[1;92mʕっ•ᴥ•ʔっ Panda is up to date!\033[0m\n"
     ;
 
@@ -729,7 +734,7 @@ fn printUsage() !void {
         \\  panda focus left|right|up|down
         \\  panda swap left|right|up|down
         \\  panda border on|off|toggle|status
-        \\  panda desktop next|prev|move-next|move-prev|1..6|move-1..6|status
+        \\  panda desktop next|prev|move-next|move-prev|1..9|move-1..9|status
         \\  panda config
         \\
         \\Config:
@@ -809,9 +814,9 @@ test "desktop cli action validation" {
         "move-next",
         "move-prev",
         "1",
-        "6",
+        "9",
         "move-1",
-        "move-6",
+        "move-9",
         "status",
     }) |action| {
         try std.testing.expect(isValidDesktopAction(action));
@@ -819,10 +824,8 @@ test "desktop cli action validation" {
 
     inline for ([_][]const u8{
         "0",
-        "7",
         "10",
         "move-0",
-        "move-7",
         "move-10",
         "move",
         "desktop-1",

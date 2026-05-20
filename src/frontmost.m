@@ -4,7 +4,9 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <Carbon/Carbon.h>
 #import <QuartzCore/QuartzCore.h>
+#import <UserNotifications/UserNotifications.h>
 #import <dlfcn.h>
+#import <dispatch/dispatch.h>
 #import <string.h>
 #import <unistd.h>
 
@@ -177,6 +179,55 @@ static int PandaDrainHotkeyEvents(uint32_t *out_hotkey_ids, int capacity) {
 bool pandaPromptForAccessibility(void) {
     NSDictionary *options = @{ (__bridge id)kAXTrustedCheckOptionPrompt: @YES };
     return AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
+}
+
+bool pandaPostUserNotification(const char *title, const char *body) {
+    @autoreleasepool {
+        NSString *title_string = title != NULL ? [NSString stringWithUTF8String:title] : @"Panda";
+        NSString *body_string = body != NULL ? [NSString stringWithUTF8String:body] : @"";
+        if (title_string == nil) title_string = @"Panda";
+        if (body_string == nil) body_string = @"";
+
+        if (@available(macOS 10.14, *)) {
+            __block bool delivered = false;
+            dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+            UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+            UNAuthorizationOptions options = UNAuthorizationOptionAlert | UNAuthorizationOptionSound;
+
+            [center requestAuthorizationWithOptions:options completionHandler:^(BOOL granted, NSError *error) {
+                if (granted && error == nil) {
+                    UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
+                    content.title = title_string;
+                    content.body = body_string;
+                    content.sound = [UNNotificationSound defaultSound];
+
+                    NSString *identifier = [NSString stringWithFormat:@"dev.givepanda.update.%f", NSDate.timeIntervalSinceReferenceDate];
+                    UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:identifier content:content trigger:nil];
+                    [center addNotificationRequest:request withCompletionHandler:^(NSError *add_error) {
+                        delivered = add_error == nil;
+                        dispatch_semaphore_signal(semaphore);
+                    }];
+                    return;
+                }
+
+                dispatch_semaphore_signal(semaphore);
+            }];
+
+            dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC));
+            dispatch_semaphore_wait(semaphore, timeout);
+            return delivered;
+        }
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        NSUserNotification *notification = [[NSUserNotification alloc] init];
+        notification.title = title_string;
+        notification.informativeText = body_string;
+        notification.soundName = NSUserNotificationDefaultSoundName;
+        [[NSUserNotificationCenter defaultUserNotificationCenter] deliverNotification:notification];
+#pragma clang diagnostic pop
+        return true;
+    }
 }
 
 static OSStatus PandaHotkeyEventHandler(EventHandlerCallRef next_handler, EventRef event, void *user_data) {

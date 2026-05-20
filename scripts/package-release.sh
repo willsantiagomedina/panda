@@ -55,6 +55,7 @@ clang "$tmp_build_dir/main.o" "$tmp_build_dir/frontmost.o" \
   -framework Carbon \
   -framework Foundation \
   -framework QuartzCore \
+  -framework UserNotifications \
   -lobjc \
   -lproc \
   -o "$ROOT/zig-out/bin/panda"

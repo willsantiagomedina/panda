@@ -73,6 +73,7 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     -framework Carbon \
     -framework Foundation \
     -framework QuartzCore \
+    -framework UserNotifications \
     -lobjc \
     -lproc \
     -o "$ROOT/zig-out/bin/panda"

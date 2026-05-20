@@ -95,6 +95,10 @@ pub fn promptForAccessibility() bool {
     return c.pandaPromptForAccessibility();
 }
 
+pub fn postUserNotification(title: [*:0]const u8, body: [*:0]const u8) void {
+    _ = c.pandaPostUserNotification(title, body);
+}
+
 pub fn createApplication(pid: i32) Error!c.AXUIElementRef {
     const app = c.AXUIElementCreateApplication(pid);
     if (app == null) {

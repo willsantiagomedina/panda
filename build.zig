@@ -25,6 +25,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkFramework("Carbon", .{});
     exe.root_module.linkFramework("Foundation", .{});
     exe.root_module.linkFramework("QuartzCore", .{});
+    exe.root_module.linkFramework("UserNotifications", .{});
     exe.root_module.linkSystemLibrary("objc", .{});
     exe.root_module.linkSystemLibrary("proc", .{});
     exe.linkLibC();
@@ -62,6 +63,7 @@ pub fn build(b: *std.Build) void {
     tests.root_module.linkFramework("Carbon", .{});
     tests.root_module.linkFramework("Foundation", .{});
     tests.root_module.linkFramework("QuartzCore", .{});
+    tests.root_module.linkFramework("UserNotifications", .{});
     tests.root_module.linkSystemLibrary("objc", .{});
     tests.root_module.linkSystemLibrary("proc", .{});
     tests.linkLibC();
