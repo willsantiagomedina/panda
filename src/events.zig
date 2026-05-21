@@ -81,6 +81,7 @@ pub const EventLoop = struct {
     last_snapshot: WindowSnapshot = .{},
     notifications_enabled: bool = false,
     relayout_pending: bool = false,
+    workspace_transition_until: f64 = 0,
     border_enabled: bool = true,
     control_socket_fd: ?std.posix.socket_t = null,
     control_socket_path: ?[]u8 = null,
@@ -357,7 +358,12 @@ pub const EventLoop = struct {
         self.force_full_workspace_scan = false;
 
         if (load_all_tileable) {
-            space.loadAllTileableWindowsForRunningApps() catch |err| switch (err) {
+            var known_window_ids = std.AutoHashMap(u64, void).init(self.allocator);
+            defer known_window_ids.deinit();
+            var managed_it = self.workspace_manager.windows.iterator();
+            while (managed_it.next()) |entry| try known_window_ids.put(entry.key_ptr.*, {});
+
+            space.loadAllTileableWindowsForRunningAppsIncluding(&known_window_ids) catch |err| switch (err) {
                 error.AppUnresponsive,
                 error.AttributeUnsupported,
                 error.InvalidPid,
@@ -463,6 +469,8 @@ pub const EventLoop = struct {
         };
         for (placements) |placement| self.workspace_manager.markVisible(placement.window_id, placement.frame);
         self.restoring_workspace = null;
+        self.workspace_transition_until = ax.c.CFAbsoluteTimeGetCurrent() +
+            self.options.performance.self_event_suppression_window_seconds;
 
         try self.replaceCurrentSpace(space, screen, placements);
         self.last_snapshot = snapshotForWindowIds(self.current_space.?.window_order.items);
@@ -494,6 +502,7 @@ pub const EventLoop = struct {
 
     fn handleObservedChange(self: *EventLoop, kind: NotificationKind) void {
         const now = ax.c.CFAbsoluteTimeGetCurrent();
+        if (kind != .focus and now < self.workspace_transition_until) return;
         if (kind != .focus and
             (now - self.last_relayout_at) <= self.options.performance.self_event_suppression_window_seconds)
         {
@@ -748,6 +757,7 @@ pub const EventLoop = struct {
         const old = self.workspace_manager.active;
         if (old == target) return;
         ax.c.pandaClearBorders();
+        self.workspace_transition_until = ax.c.CFAbsoluteTimeGetCurrent() + 1.0;
         self.hideWorkspace(old);
         try self.workspace_manager.switchTo(target);
         self.restoring_workspace = target;
@@ -800,7 +810,16 @@ pub const EventLoop = struct {
         const proportional_x = if (self.current_screen.width > 0) (info.frame.x - self.current_screen.x) / self.current_screen.width else 0;
         const proportional_y = if (self.current_screen.height > 0) (info.frame.y - self.current_screen.y) / self.current_screen.height else 0;
         const geometry: workspaces.HiddenGeometry = .{ .frame = info.frame, .screen = self.current_screen, .proportional_x = @max(0, @min(1, proportional_x)), .proportional_y = @max(0, @min(1, proportional_y)) };
-        ax.setWindowPosition(info.element, hiddenWindowX(self.current_screen, info.frame), hiddenWindowY(self.current_screen, info.frame)) catch return;
+        const hidden_frame = hiddenWindowFrame(window_id, self.current_screen, info.frame);
+        ax.moveResizeWindow(info.element, .{
+            .x = hidden_frame.x,
+            .y = hidden_frame.y,
+            .width = hidden_frame.width,
+            .height = hidden_frame.height,
+        }) catch {
+            ax.setWindowSize(info.element, 1, 1) catch {};
+            ax.setWindowPosition(info.element, hidden_frame.x, hidden_frame.y) catch return;
+        };
         self.workspace_manager.setHidden(window_id, true, geometry);
     }
 
@@ -1332,12 +1351,16 @@ test "desktop workspace transitions wrap and move focused window" {
     try std.testing.expectEqual(@as(u8, 7), indexed.focused_workspace.?);
 }
 
-fn hiddenWindowX(screen: state.Rect, frame: state.Rect) f64 {
-    return screen.x + screen.width + frame.width + 10000;
-}
-
-fn hiddenWindowY(screen: state.Rect, frame: state.Rect) f64 {
-    return screen.y + screen.height + frame.height + 10000;
+fn hiddenWindowFrame(window_id: u64, screen: state.Rect, frame: state.Rect) state.Rect {
+    const slot: f64 = @floatFromInt(window_id % 32);
+    const base_x = if (screen.width > 0) screen.x - 20000 else -20000;
+    const base_y = if (screen.height > 0) screen.y - 20000 else -20000;
+    return .{
+        .x = base_x - slot,
+        .y = base_y - slot,
+        .width = @max(@as(f64, 1), @min(frame.width, @as(f64, 2))),
+        .height = @max(@as(f64, 1), @min(frame.height, @as(f64, 2))),
+    };
 }
 
 fn rectCenter(rect: state.Rect) state.Rect {

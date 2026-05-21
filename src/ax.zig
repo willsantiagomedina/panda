@@ -180,6 +180,15 @@ pub fn setWindowPosition(window: NativeWindowRef, x: f64, y: f64) Error!void {
     try axCall(c.AXUIElementSetAttributeValue(window, position_attribute, position_value));
 }
 
+pub fn setWindowSize(window: NativeWindowRef, width: f64, height: f64) Error!void {
+    var size = c.CGSize{ .width = width, .height = height };
+    const size_attribute = try makeCfString("AXSize");
+    defer c.CFRelease(size_attribute);
+    const size_value = c.AXValueCreate(c.kAXValueCGSizeType, &size) orelse return Error.ConversionFailed;
+    defer c.CFRelease(size_value);
+    try axCall(c.AXUIElementSetAttributeValue(window, size_attribute, size_value));
+}
+
 pub fn moveResizeWindow(window: NativeWindowRef, frame: Rect) Error!void {
     var point = c.CGPoint{ .x = frame.x, .y = frame.y };
     var size = c.CGSize{ .width = frame.width, .height = frame.height };

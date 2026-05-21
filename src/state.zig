@@ -174,6 +174,13 @@ pub const SpaceState = struct {
     }
 
     pub fn loadAllTileableWindowsForRunningApps(self: *SpaceState) !void {
+        try self.loadAllTileableWindowsForRunningAppsIncluding(null);
+    }
+
+    pub fn loadAllTileableWindowsForRunningAppsIncluding(
+        self: *SpaceState,
+        include_window_ids: ?*const std.AutoHashMap(u64, void),
+    ) !void {
         const panda_pid: i32 = @intCast(ax.c.pandaCurrentProcessId());
         const apps = try ax.listRunningGuiApps(self.allocator);
         defer {
@@ -192,7 +199,11 @@ pub const SpaceState = struct {
 
             for (summaries) |*summary| {
                 const id = ax.windowId(summary.element);
-                if (ax.isWindowMinimized(summary.element) or !isTileableWindow(summary.*, null) or self.windows.contains(id)) {
+                const is_included = if (include_window_ids) |ids| ids.contains(id) else false;
+                if (ax.isWindowMinimized(summary.element) or
+                    self.windows.contains(id) or
+                    !isManageableWindow(summary.*, null, is_included))
+                {
                     summary.deinit(self.allocator);
                     continue;
                 }
@@ -324,8 +335,16 @@ fn isTileableWindow(
     summary: ax.WindowSummary,
     screen: ?Rect,
 ) bool {
+    return isManageableWindow(summary, screen, false);
+}
+
+fn isManageableWindow(
+    summary: ax.WindowSummary,
+    screen: ?Rect,
+    allow_small: bool,
+) bool {
     if (!ax.isWindowStandard(summary.element)) return false;
-    if (summary.frame.width < 80 or summary.frame.height < 80) return false;
+    if (!allow_small and (summary.frame.width < 80 or summary.frame.height < 80)) return false;
 
     if (screen) |screen_rect| {
         if (!rectIntersects(summary.frame, screen_rect)) return false;
