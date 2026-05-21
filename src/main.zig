@@ -230,10 +230,17 @@ fn launchAppDaemon(allocator: std.mem.Allocator) !void {
         const install_script = try std.fmt.allocPrint(allocator,
             \\set -euo pipefail
             \\INSTALLED_APP="/Applications/Panda.app"
+            \\UPDATED=0
+            \\if [ -d "$INSTALLED_APP" ]; then
+            \\  UPDATED=1
+            \\fi
             \\rm -rf "$INSTALLED_APP"
             \\cp -R {0s} "$INSTALLED_APP"
             \\xattr -dr com.apple.quarantine "$INSTALLED_APP" >/dev/null 2>&1 || true
             \\open "$INSTALLED_APP"
+            \\if [ "$UPDATED" = "1" ]; then
+            \\  "$INSTALLED_APP/Contents/MacOS/panda-cli" notify-updated >/dev/null 2>&1 || true
+            \\fi
         , .{quoted_app});
         defer allocator.free(install_script);
         _ = try runProcess(allocator, &.{ "/bin/zsh", "-lc", install_script });

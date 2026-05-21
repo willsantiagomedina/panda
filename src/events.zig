@@ -1451,8 +1451,8 @@ test "desktop workspace transitions wrap and move focused window" {
 
 fn hiddenWindowFrame(window_id: u64, screen: state.Rect, frame: state.Rect) state.Rect {
     const slot: f64 = @floatFromInt(window_id % 32);
-    const base_x = screen.x + @max(screen.width, 0) - 1;
-    const base_y = screen.y + @max(screen.height, 0) - 1;
+    const base_x = screen.x + @max(screen.width, 0) + 8;
+    const base_y = screen.y + @max(screen.height, 0) + 8;
     return .{
         .x = base_x + slot,
         .y = base_y + slot,
@@ -1462,8 +1462,8 @@ fn hiddenWindowFrame(window_id: u64, screen: state.Rect, frame: state.Rect) stat
 }
 
 fn hiddenFrameAccepted(actual_frame: anytype, screen: state.Rect) bool {
-    return actual_frame.x >= screen.x + @max(screen.width, 0) - 1 and
-        actual_frame.y >= screen.y + @max(screen.height, 0) - 1;
+    return actual_frame.x >= screen.x + @max(screen.width, 0) and
+        actual_frame.y >= screen.y + @max(screen.height, 0);
 }
 
 fn rectIntersects(frame: anytype, screen: state.Rect) bool {
@@ -1478,7 +1478,7 @@ fn rectIntersects(frame: anytype, screen: state.Rect) bool {
         frame_bottom > screen.y;
 }
 
-test "hidden window frame parks at bottom-right corner without resizing" {
+test "hidden window frame parks beyond bottom-right without resizing" {
     const screens = [_]state.Rect{
         .{ .x = 0, .y = 0, .width = 1440, .height = 900 },
         .{ .x = -100, .y = 50, .width = 1440, .height = 900 },
@@ -1490,8 +1490,8 @@ test "hidden window frame parks at bottom-right corner without resizing" {
         const first = hiddenWindowFrame(41, screen, frame);
         const second = hiddenWindowFrame(42, screen, frame);
 
-        try std.testing.expect(first.x >= screen.x + screen.width - 1);
-        try std.testing.expect(first.y >= screen.y + screen.height - 1);
+        try std.testing.expect(first.x >= screen.x + screen.width);
+        try std.testing.expect(first.y >= screen.y + screen.height);
         try std.testing.expectEqual(frame.width, first.width);
         try std.testing.expectEqual(frame.height, first.height);
         try std.testing.expect(hiddenFrameAccepted(first, screen));
@@ -1502,10 +1502,12 @@ test "hidden window frame parks at bottom-right corner without resizing" {
 
 test "hidden frame acceptance rejects left-edge clamped windows" {
     const screen: state.Rect = .{ .x = 0, .y = 0, .width = 1440, .height = 900 };
-    const parked_bottom_right: state.Rect = .{ .x = 1439, .y = 899, .width = 1200, .height = 800 };
+    const parked_bottom_right: state.Rect = .{ .x = 1448, .y = 908, .width = 1200, .height = 800 };
+    const peeking_bottom_right: state.Rect = .{ .x = 1439, .y = 899, .width = 1200, .height = 800 };
     const clamped_left_edge: state.Rect = .{ .x = -1, .y = 100, .width = 1200, .height = 800 };
 
     try std.testing.expect(hiddenFrameAccepted(parked_bottom_right, screen));
+    try std.testing.expect(!hiddenFrameAccepted(peeking_bottom_right, screen));
     try std.testing.expect(!hiddenFrameAccepted(clamped_left_edge, screen));
 }
 
