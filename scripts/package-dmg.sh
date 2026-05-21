@@ -38,6 +38,7 @@ need_cmd sips
 need_cmd iconutil
 need_cmd hdiutil
 need_cmd shasum
+need_cmd codesign
 
 if [[ ! -f "$ICON_PNG" ]]; then
   echo "icon not found: $ICON_PNG" >&2
@@ -147,6 +148,8 @@ sips -z 512 512 "$ICON_PNG" --out "$iconset_dir/icon_512x512.png" >/dev/null
 sips -z 1024 1024 "$ICON_PNG" --out "$iconset_dir/icon_512x512@2x.png" >/dev/null
 
 iconutil -c icns "$iconset_dir" -o "$RESOURCES_DIR/PandaLogo.icns"
+
+codesign --force --deep --sign - "$APP_DIR" >/dev/null
 
 stage_dir="$tmp_dir/stage"
 mkdir -p "$stage_dir"
