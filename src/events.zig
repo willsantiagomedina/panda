@@ -90,7 +90,7 @@ pub const EventLoop = struct {
     last_snapshot_poll_at: f64 = 0,
     last_observed_change_at: f64 = 0,
     last_relayout_at: f64 = 0,
-    desktop_status_buffer: [384]u8 = undefined,
+    desktop_status_buffer: [4096]u8 = undefined,
     force_full_workspace_scan: bool = false,
     restoring_workspace: ?workspaces.WorkspaceId = null,
     suppress_hotkey_action: ?hotkeys.HotkeyAction = null,
@@ -811,15 +811,34 @@ pub const EventLoop = struct {
         const proportional_y = if (self.current_screen.height > 0) (info.frame.y - self.current_screen.y) / self.current_screen.height else 0;
         const geometry: workspaces.HiddenGeometry = .{ .frame = info.frame, .screen = self.current_screen, .proportional_x = @max(0, @min(1, proportional_x)), .proportional_y = @max(0, @min(1, proportional_y)) };
         const hidden_frame = hiddenWindowFrame(window_id, self.current_screen, info.frame);
-        ax.moveResizeWindow(info.element, .{
-            .x = hidden_frame.x,
-            .y = hidden_frame.y,
-            .width = hidden_frame.width,
-            .height = hidden_frame.height,
-        }) catch {
-            ax.setWindowSize(info.element, 1, 1) catch {};
+        ax.setWindowPosition(info.element, hidden_frame.x, hidden_frame.y) catch return;
+
+        var actual_frame = ax.windowFrame(info.element) catch return;
+        if (!hiddenFrameAccepted(actual_frame, self.current_screen)) {
             ax.setWindowPosition(info.element, hidden_frame.x, hidden_frame.y) catch return;
-        };
+            actual_frame = ax.windowFrame(info.element) catch return;
+        }
+        if (!hiddenFrameAccepted(actual_frame, self.current_screen)) {
+            log.warn(
+                "hidden window {d} was not parked at bottom-right corner; intended=({d:.1},{d:.1},{d:.1},{d:.1}) actual=({d:.1},{d:.1},{d:.1},{d:.1}) screen=({d:.1},{d:.1},{d:.1},{d:.1})",
+                .{
+                    window_id,
+                    hidden_frame.x,
+                    hidden_frame.y,
+                    hidden_frame.width,
+                    hidden_frame.height,
+                    actual_frame.x,
+                    actual_frame.y,
+                    actual_frame.width,
+                    actual_frame.height,
+                    self.current_screen.x,
+                    self.current_screen.y,
+                    self.current_screen.width,
+                    self.current_screen.height,
+                },
+            );
+            return;
+        }
         self.workspace_manager.setHidden(window_id, true, geometry);
     }
 
@@ -914,6 +933,7 @@ pub const EventLoop = struct {
             const action = parts.next() orelse return CommandError.InvalidCommand;
             if (parts.next() != null) return CommandError.InvalidCommand;
             if (std.mem.eql(u8, action, "status")) return self.desktopStatus();
+            if (std.mem.eql(u8, action, "debug-hidden")) return self.desktopDebugHidden();
             const desktop_command = parseDesktopCommand(action) orelse return CommandError.InvalidCommand;
             try self.performDesktopCommand(desktop_command);
             return "ok\n";
@@ -929,6 +949,84 @@ pub const EventLoop = struct {
         for (self.workspace_manager.workspaces) |space| {
             writer.print("{d}: {d} windows{s}\n", .{ space.id, space.window_order.items.len, if (space.id == self.workspace_manager.active) " active" else "" }) catch return "error: status too large\n";
         }
+        return stream.getWritten();
+    }
+
+    fn desktopDebugHidden(self: *EventLoop) []const u8 {
+        var stream = std.io.fixedBufferStream(&self.desktop_status_buffer);
+        const writer = stream.writer();
+        const screen_bounds = ax.mainDisplayVisibleFrame();
+        const screen = state.Rect{
+            .x = screen_bounds.x,
+            .y = screen_bounds.y,
+            .width = screen_bounds.width,
+            .height = screen_bounds.height,
+        };
+
+        writer.print(
+            "workspace: {d}\nscreen: x={d:.1} y={d:.1} w={d:.1} h={d:.1}\n",
+            .{ self.workspace_manager.active, screen.x, screen.y, screen.width, screen.height },
+        ) catch return "error: debug output too large\n";
+
+        var known_window_ids = std.AutoHashMap(u64, void).init(self.allocator);
+        defer known_window_ids.deinit();
+        var managed_it = self.workspace_manager.windows.iterator();
+        while (managed_it.next()) |entry| known_window_ids.put(entry.key_ptr.*, {}) catch return "error: debug allocation failed\n";
+
+        var all = state.SpaceState.init(self.allocator);
+        defer all.deinit();
+        all.loadAllTileableWindowsForRunningAppsIncluding(&known_window_ids) catch |err| {
+            writer.print("window scan: unavailable ({s})\n", .{@errorName(err)}) catch return "error: debug output too large\n";
+            return stream.getWritten();
+        };
+
+        var hidden_count: usize = 0;
+        managed_it = self.workspace_manager.windows.iterator();
+        while (managed_it.next()) |entry| {
+            const managed = entry.value_ptr.*;
+            if (!managed.hidden) continue;
+            hidden_count += 1;
+
+            const hidden_geometry = managed.hidden_geometry;
+            const source_screen = if (hidden_geometry) |geometry| geometry.screen else screen;
+            const source_frame = if (hidden_geometry) |geometry| geometry.frame else managed.last_known_frame;
+            const intended = hiddenWindowFrame(managed.window_id, source_screen, source_frame);
+
+            if (all.windows.get(managed.window_id)) |info| {
+                const actual = ax.windowFrame(info.element) catch |err| {
+                    writer.print(
+                        "window {d} workspace={d} pid={d} intended=({d:.1},{d:.1},{d:.1},{d:.1}) actual=unavailable({s})\n",
+                        .{ managed.window_id, managed.workspace, managed.pid, intended.x, intended.y, intended.width, intended.height, @errorName(err) },
+                    ) catch return "error: debug output too large\n";
+                    continue;
+                };
+                writer.print(
+                    "window {d} workspace={d} pid={d} intended=({d:.1},{d:.1},{d:.1},{d:.1}) actual=({d:.1},{d:.1},{d:.1},{d:.1}) parking_ok={any} intersects_screen={any}\n",
+                    .{
+                        managed.window_id,
+                        managed.workspace,
+                        managed.pid,
+                        intended.x,
+                        intended.y,
+                        intended.width,
+                        intended.height,
+                        actual.x,
+                        actual.y,
+                        actual.width,
+                        actual.height,
+                        hiddenFrameAccepted(actual, screen),
+                        rectIntersects(actual, screen),
+                    },
+                ) catch return "error: debug output too large\n";
+            } else {
+                writer.print(
+                    "window {d} workspace={d} pid={d} intended=({d:.1},{d:.1},{d:.1},{d:.1}) actual=not-found\n",
+                    .{ managed.window_id, managed.workspace, managed.pid, intended.x, intended.y, intended.width, intended.height },
+                ) catch return "error: debug output too large\n";
+            }
+        }
+
+        if (hidden_count == 0) writer.print("hidden windows: 0\n", .{}) catch return "error: debug output too large\n";
         return stream.getWritten();
     }
 
@@ -1353,14 +1451,62 @@ test "desktop workspace transitions wrap and move focused window" {
 
 fn hiddenWindowFrame(window_id: u64, screen: state.Rect, frame: state.Rect) state.Rect {
     const slot: f64 = @floatFromInt(window_id % 32);
-    const base_x = if (screen.width > 0) screen.x - 20000 else -20000;
-    const base_y = if (screen.height > 0) screen.y - 20000 else -20000;
+    const base_x = screen.x + @max(screen.width, 0) - 1;
+    const base_y = screen.y + @max(screen.height, 0) - 1;
     return .{
-        .x = base_x - slot,
-        .y = base_y - slot,
-        .width = @max(@as(f64, 1), @min(frame.width, @as(f64, 2))),
-        .height = @max(@as(f64, 1), @min(frame.height, @as(f64, 2))),
+        .x = base_x + slot,
+        .y = base_y + slot,
+        .width = frame.width,
+        .height = frame.height,
     };
+}
+
+fn hiddenFrameAccepted(actual_frame: anytype, screen: state.Rect) bool {
+    return actual_frame.x >= screen.x + @max(screen.width, 0) - 1 and
+        actual_frame.y >= screen.y + @max(screen.height, 0) - 1;
+}
+
+fn rectIntersects(frame: anytype, screen: state.Rect) bool {
+    const frame_right = frame.x + frame.width;
+    const frame_bottom = frame.y + frame.height;
+    const screen_right = screen.x + screen.width;
+    const screen_bottom = screen.y + screen.height;
+
+    return frame.x < screen_right and
+        frame_right > screen.x and
+        frame.y < screen_bottom and
+        frame_bottom > screen.y;
+}
+
+test "hidden window frame parks at bottom-right corner without resizing" {
+    const screens = [_]state.Rect{
+        .{ .x = 0, .y = 0, .width = 1440, .height = 900 },
+        .{ .x = -100, .y = 50, .width = 1440, .height = 900 },
+        .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+    };
+    const frame: state.Rect = .{ .x = 10, .y = 20, .width = 1200, .height = 800 };
+
+    for (screens) |screen| {
+        const first = hiddenWindowFrame(41, screen, frame);
+        const second = hiddenWindowFrame(42, screen, frame);
+
+        try std.testing.expect(first.x >= screen.x + screen.width - 1);
+        try std.testing.expect(first.y >= screen.y + screen.height - 1);
+        try std.testing.expectEqual(frame.width, first.width);
+        try std.testing.expectEqual(frame.height, first.height);
+        try std.testing.expect(hiddenFrameAccepted(first, screen));
+        try std.testing.expect(first.x != second.x);
+        try std.testing.expect(first.y != second.y);
+    }
+}
+
+test "hidden frame acceptance rejects left-edge clamped windows" {
+    const screen: state.Rect = .{ .x = 0, .y = 0, .width = 1440, .height = 900 };
+    const parked_bottom_right: state.Rect = .{ .x = 1439, .y = 899, .width = 1200, .height = 800 };
+    const clamped_left_edge: state.Rect = .{ .x = -1, .y = 100, .width = 1200, .height = 800 };
+
+    try std.testing.expect(hiddenFrameAccepted(parked_bottom_right, screen));
+    try std.testing.expect(!hiddenFrameAccepted(clamped_left_edge, screen));
 }
 
 fn rectCenter(rect: state.Rect) state.Rect {

@@ -285,6 +285,7 @@ fn isValidDesktopAction(action: []const u8) bool {
         std.mem.eql(u8, action, "move-next") or
         std.mem.eql(u8, action, "move-prev") or
         std.mem.eql(u8, action, "status") or
+        std.mem.eql(u8, action, "debug-hidden") or
         parseDesktopIndex(action) != null or
         parseDesktopMoveIndex(action) != null;
 }
@@ -750,7 +751,7 @@ fn printUsage() !void {
         \\  panda focus left|right|up|down
         \\  panda swap left|right|up|down
         \\  panda border on|off|toggle|status
-        \\  panda desktop next|prev|move-next|move-prev|1..9|move-1..9|status
+        \\  panda desktop next|prev|move-next|move-prev|1..9|move-1..9|status|debug-hidden
         \\  panda config
         \\
         \\Config:
@@ -835,6 +836,7 @@ test "desktop cli action validation" {
         "move-1",
         "move-9",
         "status",
+        "debug-hidden",
     }) |action| {
         try std.testing.expect(isValidDesktopAction(action));
     }
