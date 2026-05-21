@@ -243,6 +243,22 @@ fn launchAppDaemon(allocator: std.mem.Allocator) !void {
     const quoted_exe = try shellQuote(allocator, exe_path);
     defer allocator.free(quoted_exe);
 
+    if (!ax.isProcessTrusted()) {
+        _ = ax.promptForAccessibility();
+        const script =
+            \\set -euo pipefail
+            \\LOG_DIR="$HOME/Library/Logs"
+            \\mkdir -p "$LOG_DIR"
+            \\{
+            \\  printf 'Panda needs Accessibility access for this installed app binary.\\n'
+            \\  printf 'If Panda is already listed but still does not open, remove the old Panda entry and add /Applications/Panda.app again.\\n'
+            \\} >>"$LOG_DIR/panda.err.log"
+            \\open 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility' >/dev/null 2>&1 || true
+        ;
+        _ = try runProcess(allocator, &.{ "/bin/zsh", "-lc", script });
+        return;
+    }
+
     const script = try std.fmt.allocPrint(allocator,
         \\set -euo pipefail
         \\LOG_DIR="$HOME/Library/Logs"
@@ -763,7 +779,8 @@ fn printCommandError(err: anyerror) !void {
     const message = switch (err) {
         error.AccessibilityDenied =>
         \\Accessibility access is not enabled for panda.
-        \\Run `panda permissions`, then grant access in System Settings > Privacy & Security > Accessibility.
+        \\Run `panda permissions`, then grant access to /Applications/Panda.app in System Settings > Privacy & Security > Accessibility.
+        \\If Panda is already listed, remove that entry and add /Applications/Panda.app again.
         ,
         error.AppNotFound =>
         \\No running app matched that target.
