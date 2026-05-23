@@ -394,7 +394,7 @@ pub const EventLoop = struct {
             else => return err,
         };
 
-        try self.reconcileWorkspaces(&space);
+        try self.reconcileWorkspaces(&space, load_all_tileable or self.options.scope == .all_apps_main_display);
         try self.filterToActiveWorkspace(&space);
 
         if (space.window_order.items.len == 0) {
@@ -727,7 +727,7 @@ pub const EventLoop = struct {
         }
     }
 
-    fn reconcileWorkspaces(self: *EventLoop, space: *state.SpaceState) !void {
+    fn reconcileWorkspaces(self: *EventLoop, space: *state.SpaceState, complete_scan: bool) !void {
         var live_ids = std.ArrayList(u64).empty;
         defer live_ids.deinit(self.allocator);
         for (space.window_order.items) |id| {
@@ -735,7 +735,7 @@ pub const EventLoop = struct {
             try live_ids.append(self.allocator, id);
             try self.workspace_manager.ensureWindow(id, info.pid, info.frame, info.floating);
         }
-        try self.workspace_manager.removeMissing(live_ids.items);
+        if (complete_scan) try self.workspace_manager.removeMissing(live_ids.items);
     }
 
     fn filterToActiveWorkspace(self: *EventLoop, space: *state.SpaceState) !void {
@@ -810,36 +810,38 @@ pub const EventLoop = struct {
         const proportional_x = if (self.current_screen.width > 0) (info.frame.x - self.current_screen.x) / self.current_screen.width else 0;
         const proportional_y = if (self.current_screen.height > 0) (info.frame.y - self.current_screen.y) / self.current_screen.height else 0;
         const geometry: workspaces.HiddenGeometry = .{ .frame = info.frame, .screen = self.current_screen, .proportional_x = @max(0, @min(1, proportional_x)), .proportional_y = @max(0, @min(1, proportional_y)) };
-        const hidden_frame = hiddenWindowFrame(window_id, self.current_screen, info.frame);
-        ax.setWindowPosition(info.element, hidden_frame.x, hidden_frame.y) catch return;
+        const hidden_candidates = hiddenWindowFrames(window_id, self.current_screen, info.frame);
+        var intended_frame = hidden_candidates[0];
+        var actual_frame: state.Rect = info.frame;
 
-        var actual_frame = ax.windowFrame(info.element) catch return;
-        if (!hiddenFrameAccepted(actual_frame, self.current_screen)) {
-            ax.setWindowPosition(info.element, hidden_frame.x, hidden_frame.y) catch return;
-            actual_frame = ax.windowFrame(info.element) catch return;
+        for (hidden_candidates) |candidate| {
+            intended_frame = candidate;
+            ax.setWindowPosition(info.element, candidate.x, candidate.y) catch continue;
+            actual_frame = ax.windowFrame(info.element) catch continue;
+            if (hiddenFrameAccepted(actual_frame, self.current_screen)) {
+                self.workspace_manager.setHidden(window_id, true, geometry);
+                return;
+            }
         }
-        if (!hiddenFrameAccepted(actual_frame, self.current_screen)) {
-            log.warn(
-                "hidden window {d} was not parked at bottom-right corner; intended=({d:.1},{d:.1},{d:.1},{d:.1}) actual=({d:.1},{d:.1},{d:.1},{d:.1}) screen=({d:.1},{d:.1},{d:.1},{d:.1})",
-                .{
-                    window_id,
-                    hidden_frame.x,
-                    hidden_frame.y,
-                    hidden_frame.width,
-                    hidden_frame.height,
-                    actual_frame.x,
-                    actual_frame.y,
-                    actual_frame.width,
-                    actual_frame.height,
-                    self.current_screen.x,
-                    self.current_screen.y,
-                    self.current_screen.width,
-                    self.current_screen.height,
-                },
-            );
-            return;
-        }
-        self.workspace_manager.setHidden(window_id, true, geometry);
+
+        log.warn(
+            "hidden window {d} was not parked fully offscreen; intended=({d:.1},{d:.1},{d:.1},{d:.1}) actual=({d:.1},{d:.1},{d:.1},{d:.1}) screen=({d:.1},{d:.1},{d:.1},{d:.1})",
+            .{
+                window_id,
+                intended_frame.x,
+                intended_frame.y,
+                intended_frame.width,
+                intended_frame.height,
+                actual_frame.x,
+                actual_frame.y,
+                actual_frame.width,
+                actual_frame.height,
+                self.current_screen.x,
+                self.current_screen.y,
+                self.current_screen.width,
+                self.current_screen.height,
+            },
+        );
     }
 
     fn ensureActiveWorkspaceFocus(self: *EventLoop) !void {
@@ -1449,21 +1451,41 @@ test "desktop workspace transitions wrap and move focused window" {
     try std.testing.expectEqual(@as(u8, 7), indexed.focused_workspace.?);
 }
 
+const hidden_window_margin: f64 = 256;
+
 fn hiddenWindowFrame(window_id: u64, screen: state.Rect, frame: state.Rect) state.Rect {
+    return hiddenWindowFrames(window_id, screen, frame)[0];
+}
+
+fn hiddenWindowFrames(window_id: u64, screen: state.Rect, frame: state.Rect) [3]state.Rect {
     const slot: f64 = @floatFromInt(window_id % 32);
-    const base_x = screen.x + @max(screen.width, 0) + 8;
-    const base_y = screen.y + @max(screen.height, 0) + 8;
+    const offset = hidden_window_margin + slot;
+    const screen_right = screen.x + @max(screen.width, 0);
+    const screen_bottom = screen.y + @max(screen.height, 0);
     return .{
-        .x = base_x + slot,
-        .y = base_y + slot,
-        .width = frame.width,
-        .height = frame.height,
+        .{
+            .x = screen.x - frame.width - offset,
+            .y = screen_bottom + offset,
+            .width = frame.width,
+            .height = frame.height,
+        },
+        .{
+            .x = screen.x - frame.width - offset,
+            .y = screen.y,
+            .width = frame.width,
+            .height = frame.height,
+        },
+        .{
+            .x = screen_right + offset,
+            .y = screen_bottom + offset,
+            .width = frame.width,
+            .height = frame.height,
+        },
     };
 }
 
 fn hiddenFrameAccepted(actual_frame: anytype, screen: state.Rect) bool {
-    return actual_frame.x >= screen.x + @max(screen.width, 0) and
-        actual_frame.y >= screen.y + @max(screen.height, 0);
+    return !rectIntersects(actual_frame, screen);
 }
 
 fn rectIntersects(frame: anytype, screen: state.Rect) bool {
@@ -1478,7 +1500,7 @@ fn rectIntersects(frame: anytype, screen: state.Rect) bool {
         frame_bottom > screen.y;
 }
 
-test "hidden window frame parks beyond bottom-right without resizing" {
+test "hidden window frame parks fully offscreen without resizing" {
     const screens = [_]state.Rect{
         .{ .x = 0, .y = 0, .width = 1440, .height = 900 },
         .{ .x = -100, .y = 50, .width = 1440, .height = 900 },
@@ -1490,8 +1512,7 @@ test "hidden window frame parks beyond bottom-right without resizing" {
         const first = hiddenWindowFrame(41, screen, frame);
         const second = hiddenWindowFrame(42, screen, frame);
 
-        try std.testing.expect(first.x >= screen.x + screen.width);
-        try std.testing.expect(first.y >= screen.y + screen.height);
+        try std.testing.expect(!rectIntersects(first, screen));
         try std.testing.expectEqual(frame.width, first.width);
         try std.testing.expectEqual(frame.height, first.height);
         try std.testing.expect(hiddenFrameAccepted(first, screen));
@@ -1502,13 +1523,33 @@ test "hidden window frame parks beyond bottom-right without resizing" {
 
 test "hidden frame acceptance rejects left-edge clamped windows" {
     const screen: state.Rect = .{ .x = 0, .y = 0, .width = 1440, .height = 900 };
-    const parked_bottom_right: state.Rect = .{ .x = 1448, .y = 908, .width = 1200, .height = 800 };
+    const parked_bottom_right: state.Rect = .{ .x = 1696, .y = 1156, .width = 1200, .height = 800 };
+    const parked_left: state.Rect = .{ .x = -1456, .y = 100, .width = 1200, .height = 800 };
     const peeking_bottom_right: state.Rect = .{ .x = 1439, .y = 899, .width = 1200, .height = 800 };
     const clamped_left_edge: state.Rect = .{ .x = -1, .y = 100, .width = 1200, .height = 800 };
 
     try std.testing.expect(hiddenFrameAccepted(parked_bottom_right, screen));
+    try std.testing.expect(hiddenFrameAccepted(parked_left, screen));
     try std.testing.expect(!hiddenFrameAccepted(peeking_bottom_right, screen));
     try std.testing.expect(!hiddenFrameAccepted(clamped_left_edge, screen));
+}
+
+test "hidden window frame candidates include alternates that do not intersect screen" {
+    const screen: state.Rect = .{ .x = 0, .y = 0, .width = 1440, .height = 900 };
+    const normal: state.Rect = .{ .x = 20, .y = 30, .width = 800, .height = 600 };
+    const large: state.Rect = .{ .x = 0, .y = 0, .width = 2400, .height = 1600 };
+
+    for (hiddenWindowFrames(7, screen, normal)) |candidate| {
+        try std.testing.expect(!rectIntersects(candidate, screen));
+        try std.testing.expectEqual(normal.width, candidate.width);
+        try std.testing.expectEqual(normal.height, candidate.height);
+    }
+
+    for (hiddenWindowFrames(8, screen, large)) |candidate| {
+        try std.testing.expect(!rectIntersects(candidate, screen));
+        try std.testing.expectEqual(large.width, candidate.width);
+        try std.testing.expectEqual(large.height, candidate.height);
+    }
 }
 
 fn rectCenter(rect: state.Rect) state.Rect {
