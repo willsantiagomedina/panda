@@ -824,6 +824,15 @@ pub const EventLoop = struct {
             }
         }
 
+        const tiny_frame = hiddenTinyWindowFrame(window_id, self.current_screen);
+        intended_frame = tiny_frame;
+        ax.moveResizeWindow(info.element, .{ .x = tiny_frame.x, .y = tiny_frame.y, .width = tiny_frame.width, .height = tiny_frame.height }) catch {};
+        actual_frame = ax.windowFrame(info.element) catch actual_frame;
+        if (hiddenFrameAccepted(actual_frame, self.current_screen) or rectIntersectionArea(actual_frame, self.current_screen) <= 4) {
+            self.workspace_manager.setHidden(window_id, true, geometry);
+            return;
+        }
+
         log.warn(
             "hidden window {d} was not parked fully offscreen; intended=({d:.1},{d:.1},{d:.1},{d:.1}) actual=({d:.1},{d:.1},{d:.1},{d:.1}) screen=({d:.1},{d:.1},{d:.1},{d:.1})",
             .{
@@ -1457,6 +1466,17 @@ fn hiddenWindowFrame(window_id: u64, screen: state.Rect, frame: state.Rect) stat
     return hiddenWindowFrames(window_id, screen, frame)[0];
 }
 
+fn hiddenTinyWindowFrame(window_id: u64, screen: state.Rect) state.Rect {
+    const slot: f64 = @floatFromInt(window_id % 32);
+    const offset = hidden_window_margin + slot;
+    return .{
+        .x = screen.x + @max(screen.width, 0) + offset,
+        .y = screen.y + @max(screen.height, 0) + offset,
+        .width = 1,
+        .height = 1,
+    };
+}
+
 fn hiddenWindowFrames(window_id: u64, screen: state.Rect, frame: state.Rect) [3]state.Rect {
     const slot: f64 = @floatFromInt(window_id % 32);
     const offset = hidden_window_margin + slot;
@@ -1498,6 +1518,14 @@ fn rectIntersects(frame: anytype, screen: state.Rect) bool {
         frame_right > screen.x and
         frame.y < screen_bottom and
         frame_bottom > screen.y;
+}
+
+fn rectIntersectionArea(frame: anytype, screen: state.Rect) f64 {
+    const left = @max(frame.x, screen.x);
+    const top = @max(frame.y, screen.y);
+    const right = @min(frame.x + frame.width, screen.x + screen.width);
+    const bottom = @min(frame.y + frame.height, screen.y + screen.height);
+    return @max(0, right - left) * @max(0, bottom - top);
 }
 
 test "hidden window frame parks fully offscreen without resizing" {
@@ -1550,6 +1578,13 @@ test "hidden window frame candidates include alternates that do not intersect sc
         try std.testing.expectEqual(large.width, candidate.width);
         try std.testing.expectEqual(large.height, candidate.height);
     }
+}
+
+test "tiny hidden fallback preserves at most a single pixel if clamped" {
+    const screen: state.Rect = .{ .x = 0, .y = 0, .width = 1440, .height = 900 };
+    const clamped_tiny: state.Rect = .{ .x = 1439, .y = 899, .width = 1, .height = 1 };
+
+    try std.testing.expect(rectIntersectionArea(clamped_tiny, screen) <= 4);
 }
 
 fn rectCenter(rect: state.Rect) state.Rect {
