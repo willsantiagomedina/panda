@@ -812,7 +812,7 @@ pub const EventLoop = struct {
         const geometry: workspaces.HiddenGeometry = .{ .frame = info.frame, .screen = self.current_screen, .proportional_x = @max(0, @min(1, proportional_x)), .proportional_y = @max(0, @min(1, proportional_y)) };
         const hidden_candidates = hiddenWindowFrames(window_id, self.current_screen, info.frame);
         var intended_frame = hidden_candidates[0];
-        var actual_frame: state.Rect = info.frame;
+        var actual_frame: ax.Rect = .{ .x = info.frame.x, .y = info.frame.y, .width = info.frame.width, .height = info.frame.height };
 
         for (hidden_candidates) |candidate| {
             intended_frame = candidate;
