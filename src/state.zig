@@ -200,7 +200,7 @@ pub const SpaceState = struct {
             for (summaries) |*summary| {
                 const id = ax.windowId(summary.element);
                 const is_included = if (include_window_ids) |ids| ids.contains(id) else false;
-                if ((!is_included and ax.isWindowMinimized(summary.element)) or
+                if (ax.isWindowMinimized(summary.element) or
                     self.windows.contains(id) or
                     !isManageableWindow(summary.*, null, is_included))
                 {

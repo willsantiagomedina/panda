@@ -250,22 +250,6 @@ fn launchAppDaemon(allocator: std.mem.Allocator) !void {
     const quoted_exe = try shellQuote(allocator, exe_path);
     defer allocator.free(quoted_exe);
 
-    if (!ax.isProcessTrusted()) {
-        _ = ax.promptForAccessibility();
-        const script =
-            \\set -euo pipefail
-            \\LOG_DIR="$HOME/Library/Logs"
-            \\mkdir -p "$LOG_DIR"
-            \\{
-            \\  printf 'Panda needs Accessibility access for this installed app binary.\\n'
-            \\  printf 'If Panda is already listed but still does not open, remove the old Panda entry and add /Applications/Panda.app again.\\n'
-            \\} >>"$LOG_DIR/panda.err.log"
-            \\open 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility' >/dev/null 2>&1 || true
-        ;
-        _ = try runProcess(allocator, &.{ "/bin/zsh", "-lc", script });
-        return;
-    }
-
     const script = try std.fmt.allocPrint(allocator,
         \\set -euo pipefail
         \\{0s} install-daemon >/dev/null 2>&1

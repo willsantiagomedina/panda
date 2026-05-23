@@ -93,6 +93,7 @@ pub const EventLoop = struct {
     desktop_status_buffer: [4096]u8 = undefined,
     force_full_workspace_scan: bool = false,
     restoring_workspace: ?workspaces.WorkspaceId = null,
+    hiding_workspace: ?workspaces.WorkspaceId = null,
     suppress_hotkey_action: ?hotkeys.HotkeyAction = null,
     suppress_hotkeys_until: f64 = 0,
 
@@ -396,7 +397,7 @@ pub const EventLoop = struct {
 
         try self.reconcileWorkspaces(&space, load_all_tileable or self.options.scope == .all_apps_main_display);
         try self.filterToActiveWorkspace(&space);
-        self.unminimizeRestoringWorkspaceWindows(&space);
+        self.unhideRestoringWorkspaceApps(&space);
 
         if (space.window_order.items.len == 0) {
             self.last_snapshot = .{};
@@ -790,6 +791,8 @@ pub const EventLoop = struct {
     }
 
     fn hideWorkspace(self: *EventLoop, id: u8) void {
+        self.hiding_workspace = id;
+        defer self.hiding_workspace = null;
         for (self.workspace_manager.workspaces[id - 1].window_order.items) |window_id| self.hideWindowById(window_id);
     }
 
@@ -852,18 +855,33 @@ pub const EventLoop = struct {
                 self.current_screen.height,
             },
         );
-        if (ax.setWindowMinimized(info.element, true)) {
+        if (self.canHideApplicationForWindow(window_id, info.pid) and ax.setApplicationHidden(info.pid, true)) {
             self.workspace_manager.setHidden(window_id, true, geometry);
         }
     }
 
-    fn unminimizeRestoringWorkspaceWindows(self: *EventLoop, space: *state.SpaceState) void {
+    fn canHideApplicationForWindow(self: *EventLoop, window_id: u64, pid: i32) bool {
+        const hiding_workspace = self.hiding_workspace;
+        var it = self.workspace_manager.windows.iterator();
+        while (it.next()) |entry| {
+            const managed = entry.value_ptr.*;
+            if (managed.window_id == window_id or managed.pid != pid or managed.hidden) continue;
+            if (hiding_workspace) |workspace| {
+                if (managed.workspace != workspace) return false;
+            } else if (managed.workspace == self.workspace_manager.active) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    fn unhideRestoringWorkspaceApps(self: *EventLoop, space: *state.SpaceState) void {
         if (self.restoring_workspace == null or self.restoring_workspace.? != self.workspace_manager.active) return;
         var it = space.windows.iterator();
         while (it.next()) |entry| {
             const managed = self.workspace_manager.windows.get(entry.key_ptr.*) orelse continue;
-            if (managed.workspace == self.workspace_manager.active and managed.hidden and ax.isWindowMinimized(entry.value_ptr.element)) {
-                _ = ax.setWindowMinimized(entry.value_ptr.element, false);
+            if (managed.workspace == self.workspace_manager.active and managed.hidden) {
+                _ = ax.setApplicationHidden(managed.pid, false);
             }
         }
     }

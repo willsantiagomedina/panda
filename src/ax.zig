@@ -107,6 +107,18 @@ pub fn createApplication(pid: i32) Error!c.AXUIElementRef {
     return app;
 }
 
+pub fn setApplicationHidden(pid: i32, hidden: bool) bool {
+    const app = createApplication(pid) catch return false;
+    defer c.CFRelease(app);
+
+    const hidden_attribute = makeCfString("AXHidden") catch return false;
+    defer c.CFRelease(hidden_attribute);
+
+    const value = if (hidden) c.kCFBooleanTrue else c.kCFBooleanFalse;
+    axCall(c.AXUIElementSetAttributeValue(app, hidden_attribute, @ptrCast(value))) catch return false;
+    return true;
+}
+
 pub fn focusedApplicationPid() Error!i32 {
     const pid = try frontmostApplicationPid();
     if (pid <= 0) return Error.InvalidPid;
