@@ -396,6 +396,7 @@ pub const EventLoop = struct {
 
         try self.reconcileWorkspaces(&space, load_all_tileable or self.options.scope == .all_apps_main_display);
         try self.filterToActiveWorkspace(&space);
+        self.unminimizeRestoringWorkspaceWindows(&space);
 
         if (space.window_order.items.len == 0) {
             self.last_snapshot = .{};
@@ -851,6 +852,20 @@ pub const EventLoop = struct {
                 self.current_screen.height,
             },
         );
+        if (ax.setWindowMinimized(info.element, true)) {
+            self.workspace_manager.setHidden(window_id, true, geometry);
+        }
+    }
+
+    fn unminimizeRestoringWorkspaceWindows(self: *EventLoop, space: *state.SpaceState) void {
+        if (self.restoring_workspace == null or self.restoring_workspace.? != self.workspace_manager.active) return;
+        var it = space.windows.iterator();
+        while (it.next()) |entry| {
+            const managed = self.workspace_manager.windows.get(entry.key_ptr.*) orelse continue;
+            if (managed.workspace == self.workspace_manager.active and managed.hidden and ax.isWindowMinimized(entry.value_ptr.element)) {
+                _ = ax.setWindowMinimized(entry.value_ptr.element, false);
+            }
+        }
     }
 
     fn ensureActiveWorkspaceFocus(self: *EventLoop) !void {
