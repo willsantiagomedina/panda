@@ -5,6 +5,7 @@ const events = @import("events.zig");
 const layout = @import("layout.zig");
 const state = @import("state.zig");
 const workspaces = @import("workspaces.zig");
+const build_options = @import("build_options");
 
 const log = std.log.scoped(.panda);
 const launch_agent_label = "dev.givepanda.panda";
@@ -102,6 +103,12 @@ fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) 
     if (std.mem.eql(u8, command, "permissions")) {
         if (args.next() != null) return error.InvalidArguments;
         try showPermissions();
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "version")) {
+        if (args.next() != null) return error.InvalidArguments;
+        std.debug.print("{s}\n", .{build_options.build_marker});
         return;
     }
 
@@ -444,10 +451,11 @@ fn daemonStatus(allocator: std.mem.Allocator) !void {
     const service = try launchctlService(allocator);
     defer allocator.free(service);
 
+    std.debug.print("CLI: {s}\n", .{build_options.build_marker});
     const loaded = (runProcess(allocator, &.{ "launchctl", "print", service }) catch null) != null;
     std.debug.print("LaunchAgent: {s}\n", .{if (loaded) "loaded" else "not loaded"});
 
-    const response = events.sendControlCommand(allocator, "border status") catch |err| switch (err) {
+    const response = events.sendControlCommand(allocator, "build-version") catch |err| switch (err) {
         error.DaemonUnavailable => {
             std.debug.print("Control socket: unavailable\n", .{});
             return;
@@ -455,7 +463,7 @@ fn daemonStatus(allocator: std.mem.Allocator) !void {
         else => return err,
     };
     defer allocator.free(response);
-    std.debug.print("Control socket: responsive\n{s}", .{response});
+    std.debug.print("Control socket: responsive\nDaemon: {s}", .{response});
 }
 
 fn launchAgentPath(allocator: std.mem.Allocator) ![]u8 {
@@ -732,6 +740,7 @@ fn printUsage() !void {
         \\  panda install-daemon
         \\  panda uninstall-daemon
         \\  panda daemon-status
+        \\  panda version
         \\  panda update
         \\  panda permissions
         \\  panda focus left|right|up|down

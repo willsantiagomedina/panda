@@ -3,6 +3,9 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const build_marker = b.option([]const u8, "build-marker", "Build marker shown by panda version") orelse "Panda build: dev";
+    const options = b.addOptions();
+    options.addOption([]const u8, "build_marker", build_marker);
 
     const exe = b.addExecutable(.{
         .name = "panda",
@@ -12,6 +15,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    exe.root_module.addOptions("build_options", options);
     exe.root_module.addIncludePath(b.path("src"));
     exe.addCSourceFile(.{
         .file = b.path("src/frontmost.m"),
@@ -51,6 +55,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    tests.root_module.addOptions("build_options", options);
     tests.root_module.addIncludePath(b.path("src"));
     tests.addCSourceFile(.{
         .file = b.path("src/frontmost.m"),

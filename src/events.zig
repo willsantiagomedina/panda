@@ -4,6 +4,7 @@ const hotkeys = @import("hotkeys.zig");
 const layout = @import("layout.zig");
 const state = @import("state.zig");
 const workspaces = @import("workspaces.zig");
+const build_options = @import("build_options");
 
 const log = std.log.scoped(.events);
 
@@ -823,7 +824,7 @@ pub const EventLoop = struct {
             ax.setWindowPosition(info.element, candidate.x, candidate.y) catch continue;
             actual_frame = ax.windowFrame(info.element) catch continue;
             if (hiddenFrameAccepted(actual_frame, self.current_screen)) {
-                self.workspace_manager.setHidden(window_id, true, geometry);
+                self.workspace_manager.setHideStatus(window_id, .hidden, geometry, candidate, rectFromAx(actual_frame));
                 return;
             }
         }
@@ -833,7 +834,7 @@ pub const EventLoop = struct {
         ax.moveResizeWindow(info.element, .{ .x = tiny_frame.x, .y = tiny_frame.y, .width = tiny_frame.width, .height = tiny_frame.height }) catch {};
         actual_frame = ax.windowFrame(info.element) catch actual_frame;
         if (hiddenFrameAccepted(actual_frame, self.current_screen) or rectIntersectionArea(actual_frame, self.current_screen) <= 4) {
-            self.workspace_manager.setHidden(window_id, true, geometry);
+            self.workspace_manager.setHideStatus(window_id, .hidden, geometry, tiny_frame, rectFromAx(actual_frame));
             return;
         }
 
@@ -856,7 +857,16 @@ pub const EventLoop = struct {
             },
         );
         if (self.canHideApplicationForWindow(window_id, info.pid) and ax.setApplicationHidden(info.pid, true)) {
-            self.workspace_manager.setHidden(window_id, true, geometry);
+            self.workspace_manager.setHideStatus(window_id, .hidden, geometry, intended_frame, rectFromAx(actual_frame));
+        } else {
+            const visible_area = rectIntersectionArea(actual_frame, self.current_screen);
+            self.workspace_manager.setHideStatus(
+                window_id,
+                if (visible_area > 0) .partially_hidden else .hide_failed,
+                geometry,
+                intended_frame,
+                rectFromAx(actual_frame),
+            );
         }
     }
 
@@ -935,6 +945,10 @@ pub const EventLoop = struct {
     fn executeControlCommand(self: *EventLoop, raw: []const u8) ![]const u8 {
         var parts = std.mem.tokenizeScalar(u8, raw, ' ');
         const verb = parts.next() orelse return CommandError.InvalidCommand;
+
+        if (std.mem.eql(u8, verb, "build-version")) {
+            return build_options.build_marker ++ "\n";
+        }
 
         if (std.mem.eql(u8, verb, "focus")) {
             const direction = parseDirection(parts.next() orelse return CommandError.InvalidCommand) orelse return CommandError.InvalidCommand;
@@ -1028,28 +1042,34 @@ pub const EventLoop = struct {
         managed_it = self.workspace_manager.windows.iterator();
         while (managed_it.next()) |entry| {
             const managed = entry.value_ptr.*;
-            if (!managed.hidden) continue;
+            if (managed.hide_status == .visible) continue;
             hidden_count += 1;
 
             const hidden_geometry = managed.hidden_geometry;
             const source_screen = if (hidden_geometry) |geometry| geometry.screen else screen;
             const source_frame = if (hidden_geometry) |geometry| geometry.frame else managed.last_known_frame;
-            const intended = hiddenWindowFrame(managed.window_id, source_screen, source_frame);
+            const intended = managed.intended_hidden_frame orelse hiddenWindowFrame(managed.window_id, source_screen, source_frame);
+            var app = ax.describeRunningApp(self.allocator, managed.pid) catch null;
+            defer if (app) |*running_app| running_app.deinit(self.allocator);
+            const app_name = if (app) |running_app| running_app.name else "<unknown>";
 
             if (all.windows.get(managed.window_id)) |info| {
                 const actual = ax.windowFrame(info.element) catch |err| {
                     writer.print(
-                        "window {d} workspace={d} pid={d} intended=({d:.1},{d:.1},{d:.1},{d:.1}) actual=unavailable({s})\n",
-                        .{ managed.window_id, managed.workspace, managed.pid, intended.x, intended.y, intended.width, intended.height, @errorName(err) },
+                        "window {d} status={s} workspace={d} pid={d} app={s} intended=({d:.1},{d:.1},{d:.1},{d:.1}) actual=unavailable({s})\n",
+                        .{ managed.window_id, @tagName(managed.hide_status), managed.workspace, managed.pid, app_name, intended.x, intended.y, intended.width, intended.height, @errorName(err) },
                     ) catch return "error: debug output too large\n";
                     continue;
                 };
+                const intersection_area = rectIntersectionArea(actual, screen);
                 writer.print(
-                    "window {d} workspace={d} pid={d} intended=({d:.1},{d:.1},{d:.1},{d:.1}) actual=({d:.1},{d:.1},{d:.1},{d:.1}) parking_ok={any} intersects_screen={any}\n",
+                    "window {d} status={s} workspace={d} pid={d} app={s} intended=({d:.1},{d:.1},{d:.1},{d:.1}) actual=({d:.1},{d:.1},{d:.1},{d:.1}) parking_ok={any} intersects_screen={any} intersection_area={d:.1}\n",
                     .{
                         managed.window_id,
+                        @tagName(managed.hide_status),
                         managed.workspace,
                         managed.pid,
+                        app_name,
                         intended.x,
                         intended.y,
                         intended.width,
@@ -1060,17 +1080,18 @@ pub const EventLoop = struct {
                         actual.height,
                         hiddenFrameAccepted(actual, screen),
                         rectIntersects(actual, screen),
+                        intersection_area,
                     },
                 ) catch return "error: debug output too large\n";
             } else {
                 writer.print(
-                    "window {d} workspace={d} pid={d} intended=({d:.1},{d:.1},{d:.1},{d:.1}) actual=not-found\n",
-                    .{ managed.window_id, managed.workspace, managed.pid, intended.x, intended.y, intended.width, intended.height },
+                    "window {d} status={s} workspace={d} pid={d} app={s} intended=({d:.1},{d:.1},{d:.1},{d:.1}) actual=not-found\n",
+                    .{ managed.window_id, @tagName(managed.hide_status), managed.workspace, managed.pid, app_name, intended.x, intended.y, intended.width, intended.height },
                 ) catch return "error: debug output too large\n";
             }
         }
 
-        if (hidden_count == 0) writer.print("hidden windows: 0\n", .{}) catch return "error: debug output too large\n";
+        if (hidden_count == 0) writer.print("hidden/problem windows: 0\n", .{}) catch return "error: debug output too large\n";
         return stream.getWritten();
     }
 
@@ -1561,6 +1582,10 @@ fn rectIntersectionArea(frame: anytype, screen: state.Rect) f64 {
     return @max(0, right - left) * @max(0, bottom - top);
 }
 
+fn rectFromAx(rect: ax.Rect) state.Rect {
+    return .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height };
+}
+
 test "hidden window frame parks fully offscreen without resizing" {
     const screens = [_]state.Rect{
         .{ .x = 0, .y = 0, .width = 1440, .height = 900 },
@@ -1618,6 +1643,33 @@ test "tiny hidden fallback preserves at most a single pixel if clamped" {
     const clamped_tiny: state.Rect = .{ .x = 1439, .y = 899, .width = 1, .height = 1 };
 
     try std.testing.expect(rectIntersectionArea(clamped_tiny, screen) <= 4);
+}
+
+test "app hide fallback is allowed when all same-pid windows leave active workspace" {
+    var loop = EventLoop.init(std.testing.allocator, .{});
+    defer loop.deinit();
+
+    try loop.workspace_manager.ensureWindow(1, 100, .{ .x = 0, .y = 0, .width = 100, .height = 100 }, false);
+    try loop.workspace_manager.ensureWindow(2, 100, .{ .x = 100, .y = 0, .width = 100, .height = 100 }, false);
+
+    loop.hiding_workspace = 1;
+    defer loop.hiding_workspace = null;
+
+    try std.testing.expect(loop.canHideApplicationForWindow(1, 100));
+}
+
+test "app hide fallback is blocked when same-pid window stays active" {
+    var loop = EventLoop.init(std.testing.allocator, .{});
+    defer loop.deinit();
+
+    try loop.workspace_manager.ensureWindow(1, 100, .{ .x = 0, .y = 0, .width = 100, .height = 100 }, false);
+    try loop.workspace_manager.switchTo(2);
+    try loop.workspace_manager.ensureWindow(2, 100, .{ .x = 100, .y = 0, .width = 100, .height = 100 }, false);
+
+    loop.hiding_workspace = 1;
+    defer loop.hiding_workspace = null;
+
+    try std.testing.expect(!loop.canHideApplicationForWindow(1, 100));
 }
 
 fn rectCenter(rect: state.Rect) state.Rect {

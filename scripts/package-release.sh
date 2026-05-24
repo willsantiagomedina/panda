@@ -29,15 +29,21 @@ mkdir -p "$ROOT/zig-out/bin"
 tmp_build_dir="$(mktemp -d)"
 tmp_dir=""
 trap 'rm -rf "$tmp_dir" "$tmp_build_dir"' EXIT
+build_sha="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
+build_marker="${PANDA_BUILD_MARKER:-Panda build: $build_sha}"
+build_options="$tmp_build_dir/build_options.zig"
+printf 'pub const build_marker = "%s";\n' "$build_marker" > "$build_options"
 
 zig build-obj \
-  "$ROOT/src/main.zig" \
   -I "$ROOT/src" \
   -target "$ZIG_TARGET" \
   -O ReleaseFast \
   -F "$PANDA_MACOS_SDK/System/Library/Frameworks" \
   -I "$PANDA_MACOS_SDK/usr/include" \
-  -femit-bin="$tmp_build_dir/main.o"
+  -femit-bin="$tmp_build_dir/main.o" \
+  --dep build_options \
+  -Mmain="$ROOT/src/main.zig" \
+  -Mbuild_options="$build_options"
 
 clang -c "$ROOT/src/frontmost.m" \
   -I "$ROOT/src" \

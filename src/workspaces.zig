@@ -12,11 +12,21 @@ pub const HiddenGeometry = struct {
 };
 
 pub const ManagedWindow = struct {
+    pub const HideStatus = enum {
+        visible,
+        hidden,
+        partially_hidden,
+        hide_failed,
+    };
+
     window_id: u64,
     pid: i32,
     workspace: WorkspaceId,
     hidden: bool = false,
+    hide_status: HideStatus = .visible,
     hidden_geometry: ?HiddenGeometry = null,
+    intended_hidden_frame: ?state.Rect = null,
+    actual_hidden_frame: ?state.Rect = null,
     last_known_frame: state.Rect,
     floating: bool = false,
 };
@@ -142,15 +152,32 @@ pub const WorkspaceManager = struct {
     pub fn markVisible(self: *WorkspaceManager, window_id: u64, frame: state.Rect) void {
         if (self.windows.getPtr(window_id)) |managed| {
             managed.hidden = false;
+            managed.hide_status = .visible;
             managed.hidden_geometry = null;
+            managed.intended_hidden_frame = null;
+            managed.actual_hidden_frame = null;
             managed.last_known_frame = frame;
         }
     }
 
     pub fn setHidden(self: *WorkspaceManager, window_id: u64, hidden: bool, geometry: ?HiddenGeometry) void {
+        self.setHideStatus(window_id, if (hidden) .hidden else .visible, geometry, null, null);
+    }
+
+    pub fn setHideStatus(
+        self: *WorkspaceManager,
+        window_id: u64,
+        status: ManagedWindow.HideStatus,
+        geometry: ?HiddenGeometry,
+        intended_frame: ?state.Rect,
+        actual_frame: ?state.Rect,
+    ) void {
         if (self.windows.getPtr(window_id)) |managed| {
-            managed.hidden = hidden;
+            managed.hidden = status != .visible;
+            managed.hide_status = status;
             if (geometry) |g| managed.hidden_geometry = g;
+            managed.intended_hidden_frame = intended_frame;
+            managed.actual_hidden_frame = actual_frame;
         }
     }
 
