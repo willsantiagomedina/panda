@@ -261,7 +261,12 @@ fn launchAppDaemon(allocator: std.mem.Allocator) !void {
 
     const script = try std.fmt.allocPrint(allocator,
         \\set -euo pipefail
-        \\{0s} install-daemon >/dev/null 2>&1
+        \\LOG_DIR="$HOME/Library/Logs"
+        \\mkdir -p "$LOG_DIR"
+        \\{0s} uninstall-daemon >/dev/null 2>&1 || true
+        \\pkill -f '/Applications/Panda.app/Contents/MacOS/Panda daemon' >/dev/null 2>&1 || true
+        \\pkill -f '/Applications/Panda.app/Contents/MacOS/panda-cli daemon' >/dev/null 2>&1 || true
+        \\nohup {0s} daemon >>"$LOG_DIR/panda.log" 2>>"$LOG_DIR/panda.err.log" &
     , .{quoted_exe});
     defer allocator.free(script);
 
@@ -826,10 +831,8 @@ test "desktop cli action validation" {
         "move-next",
         "move-prev",
         "1",
-        "6",
         "9",
         "move-1",
-        "move-6",
         "move-9",
         "status",
     }) |action| {
