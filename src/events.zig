@@ -810,16 +810,8 @@ pub const EventLoop = struct {
         const proportional_x = if (self.current_screen.width > 0) (info.frame.x - self.current_screen.x) / self.current_screen.width else 0;
         const proportional_y = if (self.current_screen.height > 0) (info.frame.y - self.current_screen.y) / self.current_screen.height else 0;
         const geometry: workspaces.HiddenGeometry = .{ .frame = info.frame, .screen = self.current_screen, .proportional_x = @max(0, @min(1, proportional_x)), .proportional_y = @max(0, @min(1, proportional_y)) };
-        const hidden_frame = hiddenWindowFrame(window_id, self.current_screen, info.frame);
-        ax.moveResizeWindow(info.element, .{
-            .x = hidden_frame.x,
-            .y = hidden_frame.y,
-            .width = hidden_frame.width,
-            .height = hidden_frame.height,
-        }) catch {
-            ax.setWindowSize(info.element, 1, 1) catch {};
-            ax.setWindowPosition(info.element, hidden_frame.x, hidden_frame.y) catch return;
-        };
+        const hidden_frame = hiddenWindowFrame(self.current_screen, info.frame);
+        ax.setWindowPosition(info.element, hidden_frame.x, hidden_frame.y) catch return;
         self.workspace_manager.setHidden(window_id, true, geometry);
     }
 
@@ -1351,15 +1343,23 @@ test "desktop workspace transitions wrap and move focused window" {
     try std.testing.expectEqual(@as(u8, 7), indexed.focused_workspace.?);
 }
 
-fn hiddenWindowFrame(window_id: u64, screen: state.Rect, frame: state.Rect) state.Rect {
-    const slot: f64 = @floatFromInt(window_id % 32);
-    const base_x = if (screen.width > 0) screen.x - 20000 else -20000;
-    const base_y = if (screen.height > 0) screen.y - 20000 else -20000;
+test "hidden workspace frame preserves size and hides beyond bottom-left" {
+    const screen: state.Rect = .{ .x = 0, .y = 25, .width = 1440, .height = 875 };
+    const frame: state.Rect = .{ .x = 100, .y = 200, .width = 800, .height = 600 };
+
+    const hidden = hiddenWindowFrame(screen, frame);
+    try std.testing.expectEqual(frame.width, hidden.width);
+    try std.testing.expectEqual(frame.height, hidden.height);
+    try std.testing.expectEqual(screen.x - frame.width - 64, hidden.x);
+    try std.testing.expectEqual(screen.y + screen.height + 64, hidden.y);
+}
+
+fn hiddenWindowFrame(screen: state.Rect, frame: state.Rect) state.Rect {
     return .{
-        .x = base_x - slot,
-        .y = base_y - slot,
-        .width = @max(@as(f64, 1), @min(frame.width, @as(f64, 2))),
-        .height = @max(@as(f64, 1), @min(frame.height, @as(f64, 2))),
+        .x = screen.x - frame.width - 64,
+        .y = screen.y + screen.height + 64,
+        .width = frame.width,
+        .height = frame.height,
     };
 }
 
