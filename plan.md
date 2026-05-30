@@ -834,3 +834,50 @@ The feature is acceptable when all of these are true:
 - Existing focus/swap/border commands still work on the active workspace.
 - DMG builds successfully.
 - Changes are committed and pushed.
+
+## Targeted Fix Plan: Hidden Workspace Windows Visible in Bottom-Left
+
+Context for the next agent: the prior quick fix commit `31f6925` was reverted because it broke Panda. Start from the current `main` after the revert, not from that commit. The remaining user-visible issue to solve first is that windows from inactive Panda workspaces can show a small top-left piece in the bottom-left of the active desktop.
+
+Likely relevant files:
+
+- `src/events.zig` — current hide path is `hideWindowInfo()` and `hiddenWindowFrame()`.
+- `src/ax.zig` — AX movement/resize helpers, including `setWindowPosition`, `setWindowSize`, and `moveResizeWindow`.
+- `src/state.zig` — discovery filters for current-space/all-tileable windows.
+- `src/workspaces.zig` — hidden state and saved geometry.
+
+Current suspicious behavior:
+
+- `hiddenWindowFrame()` currently moves hidden windows to roughly `screen.x - 20000`, `screen.y - 20000`, and resizes them to `1..2` px.
+- Some macOS/apps appear to clamp that extreme/tiny frame back to a visible edge/corner, causing the small window fragment the user sees.
+- Do **not** reapply the reverted app-start/LaunchAgent change while fixing this.
+
+Recommended first implementation:
+
+1. Change the hide strategy to avoid extreme coordinates and avoid tiny resizing.
+   - Preserve the original window size.
+   - Move the window just outside one visible edge, not tens of thousands of pixels away.
+   - Try left-edge hiding first: `x = screen.x - frame.width - 64`, `y = clamp(frame.y, screen.y, screen.y + screen.height - frame.height)`.
+   - If the app clamps this back on-screen, fallback to right-edge hiding: `x = screen.x + screen.width + 64` with the same clamped `y`.
+2. Verify the moved frame after hiding.
+   - Add/read an AX frame helper if needed (or use a fresh `ax.listWindows` lookup by window id).
+   - If the post-hide frame still intersects the visible screen, mark that window as not successfully hidden and log it; do not keep retrying in a loop.
+3. Keep hidden windows excluded from active tiling.
+   - Ensure hidden windows are not included in `filterToActiveWorkspace()` unless `restoring_workspace` is active.
+   - Ensure `state.loadAllTileableWindowsForRunningAppsIncluding()` can find hidden windows for restore without assigning them to the active workspace.
+4. Do not minimize/unminimize windows.
+5. Do not change `Panda.app` daemon startup behavior in this pass.
+6. Add small pure tests for hide-geometry helpers if possible, e.g. computed hidden frame does not intersect the screen and preserves width/height.
+7. Manual test before committing:
+   - Start Panda.
+   - Put 2 windows on workspace 1.
+   - Switch to workspace 2.
+   - Confirm workspace 1 windows are not visible in any corner, especially bottom-left.
+   - Switch back and confirm windows restore/tile.
+   - Repeat with a browser window and a terminal window.
+
+Acceptance for this targeted fix:
+
+- Inactive workspace windows no longer show any visible fragment in bottom-left/bottom-right.
+- Switching workspaces still restores and tiles windows.
+- No daemon startup/app open behavior changes are included.
