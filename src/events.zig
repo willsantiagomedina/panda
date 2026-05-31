@@ -760,6 +760,7 @@ pub const EventLoop = struct {
         self.workspace_transition_until = ax.c.CFAbsoluteTimeGetCurrent() + 1.0;
         self.hideWorkspace(old);
         try self.workspace_manager.switchTo(target);
+        self.hideInactiveWorkspaces();
         self.restoring_workspace = target;
         self.force_full_workspace_scan = true;
         self.last_snapshot_poll_at = 0;
@@ -773,6 +774,7 @@ pub const EventLoop = struct {
             self.hideWindowById(focused);
             self.focused_window_id = null;
         }
+        self.hideInactiveWorkspaces();
         self.force_full_workspace_scan = true;
         if (self.current_pid) |pid| try self.relayoutPid(pid);
     }
@@ -790,6 +792,13 @@ pub const EventLoop = struct {
 
     fn hideWorkspace(self: *EventLoop, id: u8) void {
         for (self.workspace_manager.workspaces[id - 1].window_order.items) |window_id| self.hideWindowById(window_id);
+    }
+
+    fn hideInactiveWorkspaces(self: *EventLoop) void {
+        for (self.workspace_manager.workspaces) |space| {
+            if (space.id == self.workspace_manager.active) continue;
+            self.hideWorkspace(space.id);
+        }
     }
 
     fn hideWindowById(self: *EventLoop, window_id: u64) void {
