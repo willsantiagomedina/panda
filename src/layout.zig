@@ -105,11 +105,8 @@ fn insetRect(screen: state.Rect, inset: f64) state.Rect {
 pub fn applyPlacements(space: *state.SpaceState, placements: []const Placement) !void {
     for (placements) |placement| {
         const window = space.windows.getPtr(placement.window_id) orelse continue;
-        if (!rectChanged(window.frame, placement.frame)) {
-            continue;
-        }
-
         _ = ax.setWindowMinimized(window.element, false);
+
         ax.moveResizeWindow(window.element, .{
             .x = placement.frame.x,
             .y = placement.frame.y,
