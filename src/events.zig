@@ -810,6 +810,11 @@ pub const EventLoop = struct {
         const proportional_x = if (self.current_screen.width > 0) (info.frame.x - self.current_screen.x) / self.current_screen.width else 0;
         const proportional_y = if (self.current_screen.height > 0) (info.frame.y - self.current_screen.y) / self.current_screen.height else 0;
         const geometry: workspaces.HiddenGeometry = .{ .frame = info.frame, .screen = self.current_screen, .proportional_x = @max(0, @min(1, proportional_x)), .proportional_y = @max(0, @min(1, proportional_y)) };
+        if (ax.setWindowMinimized(info.element, true)) {
+            self.workspace_manager.setHidden(window_id, true, geometry);
+            return;
+        }
+
         const hidden_frame = hiddenWindowFrame(self.current_screen, info.frame);
         ax.moveResizeWindow(info.element, hidden_frame) catch return;
         self.workspace_manager.setHidden(window_id, true, geometry);

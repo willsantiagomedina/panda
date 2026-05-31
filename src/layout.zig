@@ -109,6 +109,7 @@ pub fn applyPlacements(space: *state.SpaceState, placements: []const Placement) 
             continue;
         }
 
+        _ = ax.setWindowMinimized(window.element, false);
         ax.moveResizeWindow(window.element, .{
             .x = placement.frame.x,
             .y = placement.frame.y,
