@@ -1348,20 +1348,20 @@ test "desktop workspace transitions wrap and move focused window" {
     try std.testing.expectEqual(@as(u8, 7), indexed.focused_workspace.?);
 }
 
-test "hidden workspace frame shrinks and hides beyond bottom-left" {
+test "hidden workspace frame shrinks and hides beyond bottom-right" {
     const screen: state.Rect = .{ .x = 0, .y = 25, .width = 1440, .height = 875 };
     const frame: state.Rect = .{ .x = 100, .y = 200, .width = 800, .height = 600 };
 
     const hidden = hiddenWindowFrame(screen, frame);
     try std.testing.expectEqual(@as(f64, 1), hidden.width);
     try std.testing.expectEqual(@as(f64, 1), hidden.height);
-    try std.testing.expectEqual(screen.x - 256, hidden.x);
+    try std.testing.expectEqual(screen.x + screen.width + 256, hidden.x);
     try std.testing.expectEqual(screen.y + screen.height + 256, hidden.y);
 }
 
 fn hiddenWindowFrame(screen: state.Rect, _: state.Rect) state.Rect {
     return .{
-        .x = screen.x - 256,
+        .x = screen.x + screen.width + 256,
         .y = screen.y + screen.height + 256,
         .width = 1,
         .height = 1,
