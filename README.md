@@ -1,9 +1,7 @@
-# 🐼 Panda
-
 <p align="center">
   <img src="assets/pandalogonew.png" alt="Panda app logo" width="148" />
 </p>
-
+<h1 align="center">Panda</h1>
 <p align="center">
   <strong>A cozy, fast macOS tiling window manager written in Zig.</strong>
   <br />
