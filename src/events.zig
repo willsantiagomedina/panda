@@ -1503,24 +1503,25 @@ test "desktop workspace transitions wrap and move focused window" {
     try std.testing.expectEqual(@as(u8, 7), indexed.focused_workspace.?);
 }
 
-test "hidden workspace frame preserves size and hides beyond display bounds" {
+test "hidden workspace frame preserves size and stays vertically inside display" {
     const screen: state.Rect = .{ .x = 0, .y = 25, .width = 1440, .height = 875 };
     const frame: state.Rect = .{ .x = 100, .y = 200, .width = 800, .height = 600 };
 
     const hidden = hiddenWindowFrame(screen, frame);
     try std.testing.expectEqual(frame.width, hidden.width);
     try std.testing.expectEqual(frame.height, hidden.height);
-    try std.testing.expect(hidden.x > screen.x + screen.width + frame.width);
-    try std.testing.expect(hidden.y > screen.y + screen.height + frame.height);
+    try std.testing.expect(hidden.x >= screen.x + screen.width + 1);
+    try std.testing.expect(hidden.y >= screen.y);
+    try std.testing.expect(hidden.y + hidden.height <= screen.y + screen.height);
 }
 
 fn hiddenWindowFrame(screen: state.Rect, frame: state.Rect) state.Rect {
-    const offscreen_margin = 4096.0;
     const width = @max(1, frame.width);
     const height = @max(1, frame.height);
+    const bottom_aligned_y = screen.y + @max(0, screen.height - height) - 1;
     return .{
-        .x = screen.x + screen.width + offscreen_margin + width,
-        .y = screen.y + screen.height + offscreen_margin + height,
+        .x = screen.x + screen.width + 1,
+        .y = @max(screen.y, bottom_aligned_y),
         .width = width,
         .height = height,
     };

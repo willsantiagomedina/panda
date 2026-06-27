@@ -539,12 +539,12 @@ test "parse lua-style config table" {
     try std.testing.expectEqual(hotkeys.key_right_arrow, settings.desktop.move_next.key_code);
     try std.testing.expectEqual(hotkeys.mod_control | hotkeys.mod_shift, settings.desktop.move_next.modifiers);
     try std.testing.expectEqual(@as(u16, 18), settings.desktop.switch_to[0].key_code);
-    try std.testing.expectEqual(hotkeys.mod_command, settings.desktop.switch_to[0].modifiers);
+    try std.testing.expectEqual(hotkeys.mod_command | hotkeys.mod_shift, settings.desktop.switch_to[0].modifiers);
     try std.testing.expectEqual(@as(usize, 24), settings.hotkeys.len);
     try std.testing.expectEqual(hotkeys.HotkeyAction.desktop_prev, settings.hotkeys[0].action);
     try std.testing.expectEqual(hotkeys.HotkeyAction.desktop_1, settings.hotkeys[4].action);
     try std.testing.expectEqual(@as(u16, 18), settings.hotkeys[4].chord.key_code);
-    try std.testing.expectEqual(hotkeys.mod_option, settings.hotkeys[4].chord.modifiers);
+    try std.testing.expectEqual(hotkeys.mod_option | hotkeys.mod_shift, settings.hotkeys[4].chord.modifiers);
     try std.testing.expectEqual(hotkeys.HotkeyAction.desktop_move_next, settings.hotkeys[3].action);
     try std.testing.expectEqual(hotkeys.mod_option | hotkeys.mod_command | hotkeys.mod_shift, settings.hotkeys[3].chord.modifiers);
     try std.testing.expectEqual(hotkeys.HotkeyAction.desktop_move_9, settings.hotkeys[21].action);
