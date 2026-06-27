@@ -34,6 +34,7 @@ typedef struct PandaRegisteredHotkey {
     uint32_t id;
     uint16_t key_code;
     uint32_t modifiers;
+    bool carbon_registered;
     bool active;
 } PandaRegisteredHotkey;
 static PandaRegisteredHotkey gPandaRegisteredHotkeys[512];
@@ -42,6 +43,8 @@ static const int gPandaHotkeyQueueCapacity = 256;
 static uint32_t gPandaHotkeyQueue[256];
 static int gPandaHotkeyQueueRead = 0;
 static int gPandaHotkeyQueueWrite = 0;
+static uint32_t gPandaLastQueuedHotkeyId = 0;
+static CFAbsoluteTime gPandaLastQueuedHotkeyAt = 0;
 
 static UInt32 PandaToCarbonModifiers(uint32_t modifiers) {
     UInt32 result = 0;
@@ -71,6 +74,13 @@ static CGEventFlags PandaToEventFlags(uint32_t modifiers) {
 }
 
 static void PandaPushHotkeyEvent(uint32_t hotkey_id) {
+    const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (gPandaLastQueuedHotkeyId == hotkey_id && (now - gPandaLastQueuedHotkeyAt) < 0.05) {
+        return;
+    }
+    gPandaLastQueuedHotkeyId = hotkey_id;
+    gPandaLastQueuedHotkeyAt = now;
+
     const int next = (gPandaHotkeyQueueWrite + 1) % gPandaHotkeyQueueCapacity;
     if (next == gPandaHotkeyQueueRead) {
         gPandaHotkeyQueueRead = (gPandaHotkeyQueueRead + 1) % gPandaHotkeyQueueCapacity;
@@ -85,6 +95,7 @@ static void PandaStoreRegisteredHotkey(uint32_t hotkey_id, uint16_t key_code, ui
         if (gPandaRegisteredHotkeys[i].active && gPandaRegisteredHotkeys[i].id == hotkey_id) {
             gPandaRegisteredHotkeys[i].key_code = key_code;
             gPandaRegisteredHotkeys[i].modifiers = modifiers;
+            gPandaRegisteredHotkeys[i].carbon_registered = false;
             return;
         }
     }
@@ -95,8 +106,18 @@ static void PandaStoreRegisteredHotkey(uint32_t hotkey_id, uint16_t key_code, ui
                 .id = hotkey_id,
                 .key_code = key_code,
                 .modifiers = modifiers,
+                .carbon_registered = false,
                 .active = true,
             };
+            return;
+        }
+    }
+}
+
+static void PandaSetRegisteredHotkeyCarbon(uint32_t hotkey_id, bool registered) {
+    for (int i = 0; i < gPandaRegisteredHotkeyCapacity; i++) {
+        if (gPandaRegisteredHotkeys[i].active && gPandaRegisteredHotkeys[i].id == hotkey_id) {
+            gPandaRegisteredHotkeys[i].carbon_registered = registered;
             return;
         }
     }
@@ -664,6 +685,29 @@ CGRect NSScreen_frame(void *screen) {
     }
 }
 
+CGRect pandaAllDisplaysBounds(void) {
+    @autoreleasepool {
+        NSArray<NSScreen *> *screens = NSScreen.screens;
+        CGRect union_bounds = CGRectNull;
+
+        for (NSScreen *screen in screens) {
+            NSNumber *display_id = PandaDisplayIdForScreen(screen);
+            CGRect bounds = CGRectZero;
+            if (display_id != nil) {
+                bounds = CGDisplayBounds((CGDirectDisplayID)display_id.unsignedIntValue);
+            } else {
+                bounds = NSRectToCGRect(screen.frame);
+            }
+            union_bounds = CGRectIsNull(union_bounds) ? bounds : CGRectUnion(union_bounds, bounds);
+        }
+
+        if (CGRectIsNull(union_bounds) || CGRectIsEmpty(union_bounds)) {
+            return CGDisplayBounds(CGMainDisplayID());
+        }
+        return union_bounds;
+    }
+}
+
 void pandaEnsureAppKitReady(void) {
     @autoreleasepool {
         [NSApplication sharedApplication];
@@ -936,7 +980,7 @@ bool pandaPostKeyChord(uint16_t key_code, uint32_t modifiers) {
     }
 }
 
-void pandaHotkeysInitialize(void) {
+bool pandaHotkeysInitialize(void) {
     @autoreleasepool {
         pandaEnsureAppKitReady();
 
@@ -951,7 +995,7 @@ void pandaHotkeysInitialize(void) {
                 .eventClass = kEventClassKeyboard,
                 .eventKind = kEventHotKeyPressed,
             };
-            InstallEventHandler(
+            OSStatus status = InstallEventHandler(
                 GetApplicationEventTarget(),
                 PandaHotkeyEventHandler,
                 1,
@@ -959,13 +1003,20 @@ void pandaHotkeysInitialize(void) {
                 NULL,
                 &gPandaHotkeyHandler
             );
+            if (status != noErr) {
+                gPandaHotkeyHandler = NULL;
+            }
         }
+
+        return gPandaHotkeyRefs != nil && (gPandaHotkeyHandler != NULL || gPandaHotkeyEventTap != NULL);
     }
 }
 
 bool pandaRegisterHotkey(uint32_t hotkey_id, uint16_t key_code, uint32_t modifiers) {
     @autoreleasepool {
-        pandaHotkeysInitialize();
+        if (!pandaHotkeysInitialize()) {
+            return false;
+        }
         if (gPandaHotkeyRefs == nil) {
             return false;
         }
@@ -987,8 +1038,6 @@ bool pandaRegisterHotkey(uint32_t hotkey_id, uint16_t key_code, uint32_t modifie
             .id = hotkey_id,
         };
 
-        PandaStoreRegisteredHotkey(hotkey_id, key_code, modifiers);
-
         const OSStatus status = RegisterEventHotKey(
             (UInt32)key_code,
             PandaToCarbonModifiers(modifiers),
@@ -1002,6 +1051,8 @@ bool pandaRegisterHotkey(uint32_t hotkey_id, uint16_t key_code, uint32_t modifie
             return false;
         }
 
+        PandaStoreRegisteredHotkey(hotkey_id, key_code, modifiers);
+        PandaSetRegisteredHotkeyCarbon(hotkey_id, true);
         gPandaHotkeyRefs[key] = [NSValue valueWithPointer:hotkey_ref];
         return true;
     }
@@ -1021,10 +1072,13 @@ void pandaClearHotkeys(void) {
 
         for (int i = 0; i < gPandaRegisteredHotkeyCapacity; i++) {
             gPandaRegisteredHotkeys[i].active = false;
+            gPandaRegisteredHotkeys[i].carbon_registered = false;
         }
 
         gPandaHotkeyQueueRead = 0;
         gPandaHotkeyQueueWrite = 0;
+        gPandaLastQueuedHotkeyId = 0;
+        gPandaLastQueuedHotkeyAt = 0;
     }
 }
 

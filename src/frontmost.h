@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/types.h>
-#include <CoreGraphics/CoreGraphics.h>
+#include <CoreGraphics/CGGeometry.h>
 
 #define PANDA_FRONTMOST_TEXT_CAPACITY 1024
 #define PANDA_FRONTMOST_PATH_CAPACITY 4096
@@ -51,6 +51,7 @@ int pandaListWindowsOnCurrentSpace(PandaWindowInfo *out_windows, int capacity);
 void *NSScreen_mainScreen(void);
 CGRect NSScreen_visibleFrame(void *screen);
 CGRect NSScreen_frame(void *screen);
+CGRect pandaAllDisplaysBounds(void);
 
 // Accessibility permission helpers
 bool pandaPromptForAccessibility(void);
@@ -70,7 +71,7 @@ bool pandaPostKeyChord(uint16_t key_code, uint32_t modifiers);
 bool pandaPostUserNotification(const char *title, const char *body);
 
 // Global hotkeys
-void pandaHotkeysInitialize(void);
+bool pandaHotkeysInitialize(void);
 bool pandaRegisterHotkey(uint32_t hotkey_id, uint16_t key_code, uint32_t modifiers);
 void pandaClearHotkeys(void);
 int pandaDrainHotkeys(uint32_t *out_hotkey_ids, int capacity);

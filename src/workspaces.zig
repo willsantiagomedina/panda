@@ -73,16 +73,21 @@ pub const WorkspaceManager = struct {
             return;
         }
         try self.windows.put(window_id, .{ .window_id = window_id, .pid = pid, .workspace = self.active, .last_known_frame = frame, .floating = floating });
+        errdefer _ = self.windows.remove(window_id);
         try self.workspacePtr(self.active).window_order.append(self.allocator, window_id);
     }
 
     pub fn removeMissing(self: *WorkspaceManager, live_ids: []const u64) !void {
+        try self.removeMissingVerified(live_ids, false);
+    }
+
+    pub fn removeMissingVerified(self: *WorkspaceManager, live_ids: []const u64, remove_hidden: bool) !void {
         var missing = std.ArrayList(u64).empty;
         defer missing.deinit(self.allocator);
 
         var it = self.windows.iterator();
         while (it.next()) |entry| {
-            if (!contains(live_ids, entry.key_ptr.*) and !entry.value_ptr.hidden) {
+            if (!contains(live_ids, entry.key_ptr.*) and (remove_hidden or !entry.value_ptr.hidden)) {
                 try missing.append(self.allocator, entry.key_ptr.*);
             }
         }
@@ -101,9 +106,9 @@ pub const WorkspaceManager = struct {
         try validate(target);
         const managed = self.windows.getPtr(window_id) orelse return;
         if (managed.workspace == target) return;
+        try self.workspacePtr(target).window_order.append(self.allocator, window_id);
         self.removeFromOrder(managed.workspace, window_id);
         managed.workspace = target;
-        try self.workspacePtr(target).window_order.append(self.allocator, window_id);
     }
 
     pub fn activeWindowIds(self: *WorkspaceManager) []const u64 {
@@ -202,4 +207,22 @@ test "workspace manager basic operations" {
     wm.setHidden(10, false, null);
     try wm.removeMissing(&.{});
     try std.testing.expectEqual(@as(usize, 0), wm.windows.count());
+}
+
+test "verified full scans remove hidden windows that are still missing" {
+    var wm = WorkspaceManager.init(std.testing.allocator);
+    defer wm.deinit();
+
+    try wm.ensureWindow(10, 1, .{ .x = 0, .y = 0, .width = 100, .height = 100 }, false);
+    wm.setHidden(10, true, .{
+        .frame = .{ .x = 0, .y = 0, .width = 100, .height = 100 },
+        .screen = .{ .x = 0, .y = 0, .width = 1000, .height = 800 },
+        .proportional_x = 0,
+        .proportional_y = 0,
+    });
+
+    try wm.removeMissingVerified(&.{}, true);
+
+    try std.testing.expectEqual(@as(usize, 0), wm.windows.count());
+    try std.testing.expectEqual(@as(usize, 0), wm.activeWindowIds().len);
 }

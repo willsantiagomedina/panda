@@ -105,21 +105,49 @@ fn insetRect(screen: state.Rect, inset: f64) state.Rect {
 pub fn applyPlacements(space: *state.SpaceState, placements: []const Placement) !void {
     for (placements) |placement| {
         const window = space.windows.getPtr(placement.window_id) orelse continue;
-        _ = ax.setWindowMinimized(window.element, false);
+        const position_changed = !almostEqual(window.frame.x, placement.frame.x) or
+            !almostEqual(window.frame.y, placement.frame.y);
+        const size_changed = !almostEqual(window.frame.width, placement.frame.width) or
+            !almostEqual(window.frame.height, placement.frame.height);
 
-        ax.moveResizeWindow(window.element, .{
-            .x = placement.frame.x,
-            .y = placement.frame.y,
-            .width = placement.frame.width,
-            .height = placement.frame.height,
-        }) catch |err| switch (err) {
-            error.UnexpectedAxError,
-            error.AttributeUnsupported,
-            error.AppUnresponsive,
-            error.InvalidPid,
-            => continue,
-            else => return err,
-        };
+        if (!position_changed and !size_changed) {
+            window.frame = placement.frame;
+            continue;
+        }
+
+        if (position_changed and size_changed) {
+            ax.moveResizeWindow(window.element, .{
+                .x = placement.frame.x,
+                .y = placement.frame.y,
+                .width = placement.frame.width,
+                .height = placement.frame.height,
+            }) catch |err| switch (err) {
+                error.UnexpectedAxError,
+                error.AttributeUnsupported,
+                error.AppUnresponsive,
+                error.InvalidPid,
+                => continue,
+                else => return err,
+            };
+        } else if (position_changed) {
+            ax.setWindowPosition(window.element, placement.frame.x, placement.frame.y) catch |err| switch (err) {
+                error.UnexpectedAxError,
+                error.AttributeUnsupported,
+                error.AppUnresponsive,
+                error.InvalidPid,
+                => continue,
+                else => return err,
+            };
+        } else {
+            ax.setWindowSize(window.element, placement.frame.width, placement.frame.height) catch |err| switch (err) {
+                error.UnexpectedAxError,
+                error.AttributeUnsupported,
+                error.AppUnresponsive,
+                error.InvalidPid,
+                => continue,
+                else => return err,
+            };
+        }
         window.frame = placement.frame;
     }
 }
@@ -186,13 +214,6 @@ fn ceilSqrt(value: usize) usize {
     var root: usize = 1;
     while (root * root < value) : (root += 1) {}
     return root;
-}
-
-fn rectChanged(current: state.Rect, target: state.Rect) bool {
-    return !almostEqual(current.x, target.x) or
-        !almostEqual(current.y, target.y) or
-        !almostEqual(current.width, target.width) or
-        !almostEqual(current.height, target.height);
 }
 
 fn almostEqual(a: f64, b: f64) bool {

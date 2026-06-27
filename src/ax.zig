@@ -1,15 +1,178 @@
 const std = @import("std");
 
-extern "ApplicationServices" fn _AXUIElementGetWindow(element: c.AXUIElementRef, identifier: *c.uint) c.AXError;
+pub const c = struct {
+    pub const SInt32 = i32;
+    pub const UInt32 = u32;
+    pub const uint = c_uint;
+    pub const Boolean = u8;
+    pub const pid_t = i32;
+    pub const uid_t = u32;
+    pub const CFIndex = c_long;
+    pub const CFTypeID = c_ulong;
+    pub const CFHashCode = c_ulong;
+    pub const CFStringEncoding = u32;
+    pub const CFComparisonResult = c_long;
+    pub const CFOptionFlags = c_ulong;
+    pub const CFAbsoluteTime = f64;
+    pub const CFTimeInterval = f64;
+    pub const CGFloat = f64;
+    pub const CGDirectDisplayID = u32;
+    pub const CFAllocatorRef = ?*const anyopaque;
+    pub const CFTypeRef = ?*const anyopaque;
+    pub const CFStringRef = ?*const anyopaque;
+    pub const CFArrayRef = ?*const anyopaque;
+    pub const CFBooleanRef = ?*const anyopaque;
+    pub const CFRunLoopRef = ?*const anyopaque;
+    pub const CFRunLoopSourceRef = ?*const anyopaque;
+    pub const CFRunLoopTimerRef = ?*const anyopaque;
 
-pub const c = @cImport({
-    @cInclude("ApplicationServices/ApplicationServices.h");
-    @cInclude("CoreFoundation/CoreFoundation.h");
-    @cInclude("frontmost.h");
-    @cInclude("libproc.h");
-});
+    pub const CGPoint = extern struct {
+        x: CGFloat,
+        y: CGFloat,
+    };
+    pub const CGSize = extern struct {
+        width: CGFloat,
+        height: CGFloat,
+    };
+    pub const CGRect = extern struct {
+        origin: CGPoint,
+        size: CGSize,
+    };
 
-pub const NativeWindowRef = c.AXUIElementRef;
+    pub const CFRunLoopTimerCallBack = *const fn (CFRunLoopTimerRef, ?*anyopaque) callconv(.c) void;
+    pub const CFRunLoopTimerContext = extern struct {
+        version: CFIndex,
+        info: ?*anyopaque,
+        retain: ?*const fn (?*const anyopaque) callconv(.c) ?*const anyopaque,
+        release: ?*const fn (?*const anyopaque) callconv(.c) void,
+        copyDescription: ?*const fn (?*const anyopaque) callconv(.c) CFStringRef,
+    };
+
+    pub const PANDA_FRONTMOST_TEXT_CAPACITY = 1024;
+    pub const PANDA_FRONTMOST_PATH_CAPACITY = 4096;
+    pub const PANDA_MAX_RUNNING_APPS = 256;
+    pub const PANDA_MAX_WINDOW_IDS = 256;
+    pub const PROC_PIDPATHINFO_MAXSIZE = 4096;
+
+    pub const PandaFrontmostApp = extern struct {
+        pid: pid_t,
+        name: [PANDA_FRONTMOST_TEXT_CAPACITY]u8,
+        bundle_path: [PANDA_FRONTMOST_PATH_CAPACITY]u8,
+        executable_path: [PANDA_FRONTMOST_PATH_CAPACITY]u8,
+    };
+    pub const PandaWindowInfo = extern struct {
+        window_id: u32,
+        pid: pid_t,
+        bounds: CGRect,
+        is_on_screen: bool,
+    };
+    pub const PandaBorderFrame = extern struct {
+        window_id: u32,
+        is_active: bool,
+    };
+
+    pub const kCFStringEncodingUTF8: CFStringEncoding = 0x08000100;
+    pub const kCFCompareEqualTo: CFComparisonResult = 0;
+
+    pub extern "CoreFoundation" const kCFAllocatorDefault: CFAllocatorRef;
+    pub extern "CoreFoundation" const kCFBooleanTrue: CFBooleanRef;
+    pub extern "CoreFoundation" const kCFBooleanFalse: CFBooleanRef;
+    pub extern "CoreFoundation" const kCFRunLoopDefaultMode: CFStringRef;
+
+    pub extern "CoreFoundation" fn CFRetain(cf: CFTypeRef) CFTypeRef;
+    pub extern "CoreFoundation" fn CFRelease(cf: CFTypeRef) void;
+    pub extern "CoreFoundation" fn CFHash(cf: CFTypeRef) CFHashCode;
+    pub extern "CoreFoundation" fn CFGetTypeID(cf: CFTypeRef) CFTypeID;
+    pub extern "CoreFoundation" fn CFArrayGetTypeID() CFTypeID;
+    pub extern "CoreFoundation" fn CFArrayGetCount(array: CFArrayRef) CFIndex;
+    pub extern "CoreFoundation" fn CFArrayGetValueAtIndex(array: CFArrayRef, index: CFIndex) ?*const anyopaque;
+    pub extern "CoreFoundation" fn CFStringGetTypeID() CFTypeID;
+    pub extern "CoreFoundation" fn CFStringCreateWithBytes(allocator: CFAllocatorRef, bytes: [*]const u8, numBytes: CFIndex, encoding: CFStringEncoding, isExternalRepresentation: Boolean) CFStringRef;
+    pub extern "CoreFoundation" fn CFStringCompare(theString1: CFStringRef, theString2: CFStringRef, compareOptions: CFOptionFlags) CFComparisonResult;
+    pub extern "CoreFoundation" fn CFStringGetLength(theString: CFStringRef) CFIndex;
+    pub extern "CoreFoundation" fn CFStringGetMaximumSizeForEncoding(length: CFIndex, encoding: CFStringEncoding) CFIndex;
+    pub extern "CoreFoundation" fn CFStringGetCString(theString: CFStringRef, buffer: [*]u8, bufferSize: CFIndex, encoding: CFStringEncoding) Boolean;
+    pub extern "CoreFoundation" fn CFBooleanGetTypeID() CFTypeID;
+    pub extern "CoreFoundation" fn CFBooleanGetValue(boolean: CFBooleanRef) Boolean;
+    pub extern "CoreFoundation" fn CFRunLoopGetCurrent() CFRunLoopRef;
+    pub extern "CoreFoundation" fn CFRunLoopRun() void;
+    pub extern "CoreFoundation" fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef) void;
+    pub extern "CoreFoundation" fn CFRunLoopRemoveSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef) void;
+    pub extern "CoreFoundation" fn CFRunLoopTimerCreate(allocator: CFAllocatorRef, fireDate: CFAbsoluteTime, interval: CFTimeInterval, flags: CFOptionFlags, order: CFIndex, callout: CFRunLoopTimerCallBack, context: *CFRunLoopTimerContext) CFRunLoopTimerRef;
+    pub extern "CoreFoundation" fn CFRunLoopAddTimer(rl: CFRunLoopRef, timer: CFRunLoopTimerRef, mode: CFStringRef) void;
+    pub extern "CoreFoundation" fn CFRunLoopRemoveTimer(rl: CFRunLoopRef, timer: CFRunLoopTimerRef, mode: CFStringRef) void;
+    pub extern "CoreFoundation" fn CFRunLoopTimerInvalidate(timer: CFRunLoopTimerRef) void;
+    pub extern "CoreFoundation" fn CFRunLoopTimerSetNextFireDate(timer: CFRunLoopTimerRef, fireDate: CFAbsoluteTime) void;
+    pub extern "CoreFoundation" fn CFAbsoluteTimeGetCurrent() CFAbsoluteTime;
+
+    pub extern "CoreGraphics" fn CGMainDisplayID() CGDirectDisplayID;
+    pub extern "CoreGraphics" fn CGDisplayBounds(display: CGDirectDisplayID) CGRect;
+
+    pub extern fn getuid() uid_t;
+    pub extern "proc" fn proc_listallpids(buffer: ?*anyopaque, buffersize: c_int) c_int;
+    pub extern "proc" fn proc_name(pid: c_int, buffer: ?*anyopaque, buffersize: u32) c_int;
+    pub extern "proc" fn proc_pidpath(pid: c_int, buffer: ?*anyopaque, buffersize: u32) c_int;
+
+    pub extern fn pandaCopyFrontmostApp(out_app: *PandaFrontmostApp) bool;
+    pub extern fn pandaListRunningGuiApps(out_apps: [*]PandaFrontmostApp, capacity: c_int) c_int;
+    pub extern fn pandaListWindowsOnCurrentSpace(out_windows: [*]PandaWindowInfo, capacity: c_int) c_int;
+    pub extern fn NSScreen_mainScreen() ?*anyopaque;
+    pub extern fn NSScreen_visibleFrame(screen: ?*anyopaque) CGRect;
+    pub extern fn NSScreen_frame(screen: ?*anyopaque) CGRect;
+    pub extern fn pandaAllDisplaysBounds() CGRect;
+    pub extern fn pandaPromptForAccessibility() bool;
+    pub extern fn pandaPostUserNotification(title: [*:0]const u8, body: [*:0]const u8) bool;
+    pub extern fn pandaEnsureAppKitReady() void;
+    pub extern fn pandaSyncBorders(frames: [*]const PandaBorderFrame, count: c_int) void;
+    pub extern fn pandaClearBorders() void;
+    pub extern fn pandaSetBordersVisible(visible: bool) void;
+    pub extern fn pandaCurrentProcessId() pid_t;
+    pub extern fn pandaGetDesktopState(out_active_index: *c_int, out_count: *c_int) bool;
+    pub extern fn pandaSwitchDesktopRelative(direction: c_int) bool;
+    pub extern fn pandaSwitchDesktopIndex(desktop_index: c_int) bool;
+    pub extern fn pandaPostKeyChord(key_code: u16, modifiers: u32) bool;
+    pub extern fn pandaHotkeysInitialize() bool;
+    pub extern fn pandaRegisterHotkey(hotkey_id: u32, key_code: u16, modifiers: u32) bool;
+    pub extern fn pandaClearHotkeys() void;
+    pub extern fn pandaDrainHotkeys(out_hotkey_ids: [*]u32, capacity: c_int) c_int;
+};
+
+pub const AXError = c.SInt32;
+pub const AXValueType = c.UInt32;
+pub const AXUIElementRef = c.CFTypeRef;
+pub const AXObserverRef = c.CFTypeRef;
+pub const AXValueRef = c.CFTypeRef;
+pub const AXObserverCallback = *const fn (AXObserverRef, AXUIElementRef, c.CFStringRef, ?*anyopaque) callconv(.c) void;
+
+const kAXErrorSuccess: AXError = 0;
+const kAXErrorIllegalArgument: AXError = -25201;
+const kAXErrorInvalidUIElement: AXError = -25202;
+const kAXErrorInvalidUIElementObserver: AXError = -25203;
+const kAXErrorCannotComplete: AXError = -25204;
+const kAXErrorAttributeUnsupported: AXError = -25205;
+const kAXErrorActionUnsupported: AXError = -25206;
+const kAXErrorNotificationUnsupported: AXError = -25207;
+const kAXErrorNotImplemented: AXError = -25208;
+const kAXErrorAPIDisabled: AXError = -25211;
+const kAXErrorNoValue: AXError = -25212;
+const kAXErrorParameterizedAttributeUnsupported: AXError = -25213;
+const kAXValueCGPointType: AXValueType = 1;
+const kAXValueCGSizeType: AXValueType = 2;
+
+extern "ApplicationServices" fn AXIsProcessTrusted() c.Boolean;
+extern "ApplicationServices" fn AXUIElementCreateApplication(pid: c.pid_t) AXUIElementRef;
+extern "ApplicationServices" fn AXUIElementCopyAttributeValue(element: AXUIElementRef, attribute: c.CFStringRef, value: *c.CFTypeRef) AXError;
+extern "ApplicationServices" fn AXUIElementSetAttributeValue(element: AXUIElementRef, attribute: c.CFStringRef, value: c.CFTypeRef) AXError;
+extern "ApplicationServices" fn AXUIElementPerformAction(element: AXUIElementRef, action: c.CFStringRef) AXError;
+extern "ApplicationServices" fn AXObserverCreate(pid: c.pid_t, callback: AXObserverCallback, out_observer: *AXObserverRef) AXError;
+extern "ApplicationServices" fn AXObserverAddNotification(observer: AXObserverRef, element: AXUIElementRef, notification: c.CFStringRef, refcon: ?*anyopaque) AXError;
+pub extern "ApplicationServices" fn AXObserverGetRunLoopSource(observer: AXObserverRef) c.CFRunLoopSourceRef;
+extern "ApplicationServices" fn AXValueCreate(value_type: AXValueType, value: *const anyopaque) AXValueRef;
+extern "ApplicationServices" fn AXValueGetValue(value: AXValueRef, value_type: AXValueType, out_value: *anyopaque) c.Boolean;
+extern "ApplicationServices" fn AXValueGetTypeID() c.CFTypeID;
+extern "ApplicationServices" fn _AXUIElementGetWindow(element: AXUIElementRef, identifier: *c.uint) AXError;
+
+pub const NativeWindowRef = AXUIElementRef;
 
 pub const Rect = struct {
     x: f64,
@@ -82,7 +245,7 @@ pub const Error = error{
 };
 
 pub fn isProcessTrusted() bool {
-    return c.AXIsProcessTrusted() != 0;
+    return AXIsProcessTrusted() != 0;
 }
 
 pub fn ensureTrusted() Error!void {
@@ -99,8 +262,8 @@ pub fn postUserNotification(title: [*:0]const u8, body: [*:0]const u8) void {
     _ = c.pandaPostUserNotification(title, body);
 }
 
-pub fn createApplication(pid: i32) Error!c.AXUIElementRef {
-    const app = c.AXUIElementCreateApplication(pid);
+pub fn createApplication(pid: i32) Error!AXUIElementRef {
+    const app = AXUIElementCreateApplication(pid);
     if (app == null) {
         return Error.UnexpectedAxError;
     }
@@ -136,15 +299,16 @@ pub fn listWindows(allocator: std.mem.Allocator, pid: i32) Error![]WindowSummary
     defer c.CFRelease(windows_attribute);
 
     var value: c.CFTypeRef = null;
-    try axCall(c.AXUIElementCopyAttributeValue(app, windows_attribute, &value));
+    try axCall(AXUIElementCopyAttributeValue(app, windows_attribute, &value));
     defer c.CFRelease(value);
 
     const windows = cfArrayFromType(value) orelse return Error.ConversionFailed;
     const count: usize = @intCast(c.CFArrayGetCount(windows));
     var result = try allocator.alloc(WindowSummary, count);
+    var initialized: usize = 0;
 
     errdefer {
-        for (result[0..count]) |*summary| {
+        for (result[0..initialized]) |*summary| {
             summary.deinit(allocator);
         }
         allocator.free(result);
@@ -152,8 +316,9 @@ pub fn listWindows(allocator: std.mem.Allocator, pid: i32) Error![]WindowSummary
 
     for (0..count) |index| {
         const raw_value = c.CFArrayGetValueAtIndex(windows, @intCast(index));
-        const window: c.AXUIElementRef = @ptrCast(@constCast(raw_value));
+        const window: AXUIElementRef = @ptrCast(@constCast(raw_value));
         _ = c.CFRetain(window);
+        errdefer c.CFRelease(window);
 
         const title = try copyWindowTitle(allocator, window);
         errdefer allocator.free(title);
@@ -166,6 +331,7 @@ pub fn listWindows(allocator: std.mem.Allocator, pid: i32) Error![]WindowSummary
             .title = title,
             .frame = frame,
         };
+        initialized += 1;
     }
 
     return result;
@@ -175,18 +341,18 @@ pub fn setWindowPosition(window: NativeWindowRef, x: f64, y: f64) Error!void {
     var point = c.CGPoint{ .x = x, .y = y };
     const position_attribute = try makeCfString("AXPosition");
     defer c.CFRelease(position_attribute);
-    const position_value = c.AXValueCreate(c.kAXValueCGPointType, &point) orelse return Error.ConversionFailed;
+    const position_value = AXValueCreate(kAXValueCGPointType, &point) orelse return Error.ConversionFailed;
     defer c.CFRelease(position_value);
-    try axCall(c.AXUIElementSetAttributeValue(window, position_attribute, position_value));
+    try axCall(AXUIElementSetAttributeValue(window, position_attribute, position_value));
 }
 
 pub fn setWindowSize(window: NativeWindowRef, width: f64, height: f64) Error!void {
     var size = c.CGSize{ .width = width, .height = height };
     const size_attribute = try makeCfString("AXSize");
     defer c.CFRelease(size_attribute);
-    const size_value = c.AXValueCreate(c.kAXValueCGSizeType, &size) orelse return Error.ConversionFailed;
+    const size_value = AXValueCreate(kAXValueCGSizeType, &size) orelse return Error.ConversionFailed;
     defer c.CFRelease(size_value);
-    try axCall(c.AXUIElementSetAttributeValue(window, size_attribute, size_value));
+    try axCall(AXUIElementSetAttributeValue(window, size_attribute, size_value));
 }
 
 pub fn moveResizeWindow(window: NativeWindowRef, frame: Rect) Error!void {
@@ -197,19 +363,19 @@ pub fn moveResizeWindow(window: NativeWindowRef, frame: Rect) Error!void {
     const size_attribute = try makeCfString("AXSize");
     defer c.CFRelease(size_attribute);
 
-    const position_value = c.AXValueCreate(c.kAXValueCGPointType, &point) orelse return Error.ConversionFailed;
+    const position_value = AXValueCreate(kAXValueCGPointType, &point) orelse return Error.ConversionFailed;
     defer c.CFRelease(position_value);
 
-    const size_value = c.AXValueCreate(c.kAXValueCGSizeType, &size) orelse return Error.ConversionFailed;
+    const size_value = AXValueCreate(kAXValueCGSizeType, &size) orelse return Error.ConversionFailed;
     defer c.CFRelease(size_value);
 
-    try axCall(c.AXUIElementSetAttributeValue(window, position_attribute, position_value));
-    try axCall(c.AXUIElementSetAttributeValue(window, size_attribute, size_value));
+    try axCall(AXUIElementSetAttributeValue(window, position_attribute, position_value));
+    try axCall(AXUIElementSetAttributeValue(window, size_attribute, size_value));
 }
 
-pub fn createObserver(pid: i32, callback: c.AXObserverCallback) Error!c.AXObserverRef {
-    var observer: c.AXObserverRef = null;
-    try axCall(c.AXObserverCreate(pid, callback, &observer));
+pub fn createObserver(pid: i32, callback: AXObserverCallback) Error!AXObserverRef {
+    var observer: AXObserverRef = null;
+    try axCall(AXObserverCreate(pid, callback, &observer));
     return observer orelse Error.UnexpectedAxError;
 }
 
@@ -221,30 +387,30 @@ pub fn focusedWindowId(pid: i32) Error!?u64 {
     defer c.CFRelease(focused_attribute);
 
     var value: c.CFTypeRef = null;
-    const result = c.AXUIElementCopyAttributeValue(app, focused_attribute, &value);
+    const result = AXUIElementCopyAttributeValue(app, focused_attribute, &value);
     switch (result) {
-        c.kAXErrorSuccess => {},
-        c.kAXErrorNoValue, c.kAXErrorAttributeUnsupported => return null,
+        kAXErrorSuccess => {},
+        kAXErrorNoValue, kAXErrorAttributeUnsupported => return null,
         else => try axCall(result),
     }
     defer if (value != null) c.CFRelease(value);
 
-    const window = @as(c.AXUIElementRef, @ptrCast(value orelse return null));
-    return windowId(window);
+    const window = @as(AXUIElementRef, @ptrCast(value orelse return null));
+    return stableWindowId(window);
 }
 
 pub fn focusWindow(window: NativeWindowRef) Error!void {
     const raise_action = try makeCfString("AXRaise");
     defer c.CFRelease(raise_action);
-    _ = c.AXUIElementPerformAction(window, raise_action);
+    axCall(AXUIElementPerformAction(window, raise_action)) catch {};
 
     const main_attribute = try makeCfString("AXMain");
     defer c.CFRelease(main_attribute);
-    _ = c.AXUIElementSetAttributeValue(window, main_attribute, c.kCFBooleanTrue);
+    axCall(AXUIElementSetAttributeValue(window, main_attribute, c.kCFBooleanTrue)) catch {};
 
     const focused_attribute = try makeCfString("AXFocused");
     defer c.CFRelease(focused_attribute);
-    _ = c.AXUIElementSetAttributeValue(window, focused_attribute, c.kCFBooleanTrue);
+    try axCall(AXUIElementSetAttributeValue(window, focused_attribute, c.kCFBooleanTrue));
 }
 
 pub const DesktopState = struct {
@@ -272,24 +438,28 @@ pub fn postKeyChord(key_code: u16, modifiers: u32) bool {
 }
 
 pub fn addObserverNotification(
-    observer: c.AXObserverRef,
-    element: c.AXUIElementRef,
+    observer: AXObserverRef,
+    element: AXUIElementRef,
     notification_name: []const u8,
     refcon: ?*anyopaque,
 ) Error!void {
     const notification = try makeCfString(notification_name);
     defer c.CFRelease(notification);
 
-    try axCall(c.AXObserverAddNotification(observer, element, notification, refcon));
+    try axCall(AXObserverAddNotification(observer, element, notification, refcon));
 }
 
 pub fn windowId(window: NativeWindowRef) u64 {
+    return stableWindowId(window) orelse @intCast(c.CFHash(window));
+}
+
+pub fn stableWindowId(window: NativeWindowRef) ?u64 {
     var identifier: c.uint = 0;
-    if (_AXUIElementGetWindow(window, &identifier) == c.kAXErrorSuccess and identifier != 0) {
+    if (_AXUIElementGetWindow(window, &identifier) == kAXErrorSuccess and identifier != 0) {
         return identifier;
     }
 
-    return @intCast(c.CFHash(window));
+    return null;
 }
 
 pub fn mainDisplayBounds() Rect {
@@ -315,6 +485,16 @@ pub fn mainDisplayVisibleFrame() Rect {
         .y = full.size.height - visible.origin.y - visible.size.height,
         .width = visible.size.width,
         .height = visible.size.height,
+    };
+}
+
+pub fn allDisplaysBounds() Rect {
+    const bounds = c.pandaAllDisplaysBounds();
+    return .{
+        .x = bounds.origin.x,
+        .y = bounds.origin.y,
+        .width = bounds.size.width,
+        .height = bounds.size.height,
     };
 }
 
@@ -360,20 +540,27 @@ pub fn listRunningGuiApps(allocator: std.mem.Allocator) Error![]RunningApp {
         return allocator.alloc(RunningApp, 0);
     }
 
-    var apps = std.ArrayList(RunningApp){};
+    var apps = std.ArrayList(RunningApp).empty;
     defer apps.deinit(allocator);
+    errdefer deinitRunningApps(allocator, apps.items);
 
     for (buffer[0..@intCast(count)]) |app| {
         const name = std.mem.span(@as([*:0]const u8, @ptrCast(&app.name)));
         const bundle_path = std.mem.span(@as([*:0]const u8, @ptrCast(&app.bundle_path)));
         const executable_path = std.mem.span(@as([*:0]const u8, @ptrCast(&app.executable_path)));
 
-        try apps.append(allocator, .{
+        var running_app = RunningApp{
             .pid = app.pid,
             .name = try allocator.dupe(u8, name),
-            .bundle_path = try allocator.dupe(u8, bundle_path),
-            .executable_path = try allocator.dupe(u8, executable_path),
-        });
+            .bundle_path = &.{},
+            .executable_path = &.{},
+        };
+        var transferred = false;
+        errdefer if (!transferred) running_app.deinit(allocator);
+        running_app.bundle_path = try allocator.dupe(u8, bundle_path);
+        running_app.executable_path = try allocator.dupe(u8, executable_path);
+        try apps.append(allocator, running_app);
+        transferred = true;
     }
 
     const result = try apps.toOwnedSlice(allocator);
@@ -389,7 +576,7 @@ pub fn listWindowsOnCurrentSpace(allocator: std.mem.Allocator) Error![]WindowOnS
         return allocator.alloc(WindowOnSpace, 0);
     }
 
-    var windows = std.ArrayList(WindowOnSpace){};
+    var windows = std.ArrayList(WindowOnSpace).empty;
     defer windows.deinit(allocator);
 
     for (buffer[0..@intCast(count)]) |win| {
@@ -418,8 +605,9 @@ pub fn listRunningApps(allocator: std.mem.Allocator) Error![]RunningApp {
     }
 
     const count: usize = @intCast(@divTrunc(bytes, @as(c_int, @intCast(@sizeOf(c_int)))));
-    var apps = std.ArrayList(RunningApp){};
+    var apps = std.ArrayList(RunningApp).empty;
     defer apps.deinit(allocator);
+    errdefer deinitRunningApps(allocator, apps.items);
 
     var name_buffer: [c.PROC_PIDPATHINFO_MAXSIZE]u8 = undefined;
     var path_buffer: [c.PROC_PIDPATHINFO_MAXSIZE]u8 = undefined;
@@ -441,15 +629,21 @@ pub fn listRunningApps(allocator: std.mem.Allocator) Error![]RunningApp {
         if (!isPrimaryAppExecutable(bundle_path, process_path)) continue;
         const bundle_name = std.fs.path.stem(std.fs.path.basename(bundle_path));
 
-        try apps.append(allocator, .{
+        var running_app = RunningApp{
             .pid = raw_pid,
             .name = if (bundle_name.len != 0)
                 try allocator.dupe(u8, bundle_name)
             else
                 try allocator.dupe(u8, process_name),
-            .bundle_path = try allocator.dupe(u8, bundle_path),
-            .executable_path = try allocator.dupe(u8, process_path),
-        });
+            .bundle_path = &.{},
+            .executable_path = &.{},
+        };
+        var transferred = false;
+        errdefer if (!transferred) running_app.deinit(allocator);
+        running_app.bundle_path = try allocator.dupe(u8, bundle_path);
+        running_app.executable_path = try allocator.dupe(u8, process_path);
+        try apps.append(allocator, running_app);
+        transferred = true;
     }
 
     const result = try apps.toOwnedSlice(allocator);
@@ -475,6 +669,10 @@ fn runningAppForPid(allocator: std.mem.Allocator, pid: i32) Error!RunningApp {
     }
 
     return Error.AppNotFound;
+}
+
+fn deinitRunningApps(allocator: std.mem.Allocator, apps: []RunningApp) void {
+    for (apps) |*app| app.deinit(allocator);
 }
 
 fn lessRunningApp(_: void, lhs: RunningApp, rhs: RunningApp) bool {
@@ -526,7 +724,12 @@ fn copyWindowTitle(allocator: std.mem.Allocator, window: NativeWindowRef) Error!
     defer c.CFRelease(title_attribute);
 
     var value: c.CFTypeRef = null;
-    try axCall(c.AXUIElementCopyAttributeValue(window, title_attribute, &value));
+    const result = AXUIElementCopyAttributeValue(window, title_attribute, &value);
+    switch (result) {
+        kAXErrorSuccess => {},
+        kAXErrorNoValue, kAXErrorAttributeUnsupported => return allocator.dupe(u8, "<untitled>"),
+        else => try axCall(result),
+    }
     defer if (value != null) c.CFRelease(value);
 
     const string = cfStringFromType(value) orelse return allocator.dupe(u8, "<untitled>");
@@ -539,11 +742,13 @@ fn copyWindowFrame(window: NativeWindowRef) Error!Rect {
     const size_attribute = try makeCfString("AXSize");
     defer c.CFRelease(size_attribute);
 
+    const point = try copyPoint(window, position_attribute);
+    const size = try copySize(window, size_attribute);
     return .{
-        .x = try copyPointComponent(window, position_attribute, .x),
-        .y = try copyPointComponent(window, position_attribute, .y),
-        .width = try copySizeComponent(window, size_attribute, .width),
-        .height = try copySizeComponent(window, size_attribute, .height),
+        .x = point.x,
+        .y = point.y,
+        .width = size.width,
+        .height = size.height,
     };
 }
 
@@ -552,7 +757,7 @@ pub fn isWindowMinimized(window: NativeWindowRef) bool {
     defer c.CFRelease(minimized_attribute);
 
     var value: c.CFTypeRef = null;
-    axCall(c.AXUIElementCopyAttributeValue(window, minimized_attribute, &value)) catch return false;
+    axCall(AXUIElementCopyAttributeValue(window, minimized_attribute, &value)) catch return false;
     defer if (value != null) c.CFRelease(value);
 
     if (value == null) return false;
@@ -565,7 +770,7 @@ pub fn setWindowMinimized(window: NativeWindowRef, minimized: bool) bool {
     defer c.CFRelease(minimized_attribute);
 
     const value = if (minimized) c.kCFBooleanTrue else c.kCFBooleanFalse;
-    axCall(c.AXUIElementSetAttributeValue(window, minimized_attribute, @ptrCast(value))) catch return false;
+    axCall(AXUIElementSetAttributeValue(window, minimized_attribute, @ptrCast(value))) catch return false;
     return true;
 }
 
@@ -574,7 +779,7 @@ pub fn isWindowStandard(window: NativeWindowRef) bool {
     defer c.CFRelease(subrole_attribute);
 
     var value: c.CFTypeRef = null;
-    axCall(c.AXUIElementCopyAttributeValue(window, subrole_attribute, &value)) catch return true;
+    axCall(AXUIElementCopyAttributeValue(window, subrole_attribute, &value)) catch return true;
     defer if (value != null) c.CFRelease(value);
 
     const subrole = cfStringFromType(value) orelse return true;
@@ -585,41 +790,30 @@ pub fn isWindowStandard(window: NativeWindowRef) bool {
     return c.CFStringCompare(subrole, standard_window, 0) == c.kCFCompareEqualTo;
 }
 
-const PointComponent = enum { x, y };
-const SizeComponent = enum { width, height };
-
-fn copyPointComponent(window: NativeWindowRef, attribute: c.CFStringRef, component: PointComponent) Error!f64 {
+fn copyPoint(window: NativeWindowRef, attribute: c.CFStringRef) Error!c.CGPoint {
     var value: c.CFTypeRef = null;
-    try axCall(c.AXUIElementCopyAttributeValue(window, attribute, &value));
+    try axCall(AXUIElementCopyAttributeValue(window, attribute, &value));
     defer if (value != null) c.CFRelease(value);
 
     const ax_value = cfAxValueFromType(value) orelse return Error.ConversionFailed;
     var point: c.CGPoint = undefined;
-    if (c.AXValueGetValue(ax_value, c.kAXValueCGPointType, &point) == 0) {
+    if (AXValueGetValue(ax_value, kAXValueCGPointType, &point) == 0) {
         return Error.ConversionFailed;
     }
-
-    return switch (component) {
-        .x => point.x,
-        .y => point.y,
-    };
+    return point;
 }
 
-fn copySizeComponent(window: NativeWindowRef, attribute: c.CFStringRef, component: SizeComponent) Error!f64 {
+fn copySize(window: NativeWindowRef, attribute: c.CFStringRef) Error!c.CGSize {
     var value: c.CFTypeRef = null;
-    try axCall(c.AXUIElementCopyAttributeValue(window, attribute, &value));
+    try axCall(AXUIElementCopyAttributeValue(window, attribute, &value));
     defer if (value != null) c.CFRelease(value);
 
     const ax_value = cfAxValueFromType(value) orelse return Error.ConversionFailed;
     var size: c.CGSize = undefined;
-    if (c.AXValueGetValue(ax_value, c.kAXValueCGSizeType, &size) == 0) {
+    if (AXValueGetValue(ax_value, kAXValueCGSizeType, &size) == 0) {
         return Error.ConversionFailed;
     }
-
-    return switch (component) {
-        .width => size.width,
-        .height => size.height,
-    };
+    return size;
 }
 
 fn copyCfString(allocator: std.mem.Allocator, value: c.CFStringRef) Error![]u8 {
@@ -684,14 +878,14 @@ fn dupCStringField(allocator: std.mem.Allocator, buffer: [*c]const u8) Error![]u
     return allocator.dupe(u8, slice);
 }
 
-fn axCall(code: c.AXError) Error!void {
+fn axCall(code: AXError) Error!void {
     switch (code) {
-        c.kAXErrorSuccess => return,
-        c.kAXErrorAPIDisabled => return Error.AccessibilityDenied,
-        c.kAXErrorCannotComplete => return Error.AppUnresponsive,
-        c.kAXErrorAttributeUnsupported, c.kAXErrorNoValue => return Error.AttributeUnsupported,
-        c.kAXErrorIllegalArgument, c.kAXErrorInvalidUIElement, c.kAXErrorInvalidUIElementObserver => return Error.InvalidPid,
-        c.kAXErrorNotImplemented, c.kAXErrorActionUnsupported, c.kAXErrorNotificationUnsupported, c.kAXErrorParameterizedAttributeUnsupported => return Error.UnsupportedTarget,
+        kAXErrorSuccess => return,
+        kAXErrorAPIDisabled => return Error.AccessibilityDenied,
+        kAXErrorCannotComplete => return Error.AppUnresponsive,
+        kAXErrorAttributeUnsupported, kAXErrorNoValue => return Error.AttributeUnsupported,
+        kAXErrorIllegalArgument, kAXErrorInvalidUIElement, kAXErrorInvalidUIElementObserver => return Error.InvalidPid,
+        kAXErrorNotImplemented, kAXErrorActionUnsupported, kAXErrorNotificationUnsupported, kAXErrorParameterizedAttributeUnsupported => return Error.UnsupportedTarget,
         else => return Error.UnexpectedAxError,
     }
 }
@@ -716,8 +910,8 @@ fn cfStringFromType(value: c.CFTypeRef) ?c.CFStringRef {
     return @as(c.CFStringRef, @ptrCast(value.?));
 }
 
-fn cfAxValueFromType(value: c.CFTypeRef) ?c.AXValueRef {
+fn cfAxValueFromType(value: c.CFTypeRef) ?AXValueRef {
     if (value == null) return null;
-    if (c.CFGetTypeID(value) != c.AXValueGetTypeID()) return null;
-    return @as(c.AXValueRef, @ptrCast(value.?));
+    if (c.CFGetTypeID(value) != AXValueGetTypeID()) return null;
+    return @as(AXValueRef, @ptrCast(value.?));
 }

@@ -78,12 +78,18 @@ pub const SpaceState = struct {
     }
 
     pub fn loadWindowsForPidOnScreen(self: *SpaceState, pid: i32, screen: ?Rect) !void {
+        var visible_ids = try self.currentSpaceWindowIds(screen);
+        defer visible_ids.deinit();
+
         const summaries = try ax.listWindows(self.allocator, pid);
         defer self.allocator.free(summaries);
 
         for (summaries) |*summary| {
-            const id = ax.windowId(summary.element);
-            if (!isTileableWindow(summary.*, screen)) {
+            const id = ax.stableWindowId(summary.element) orelse {
+                summary.deinit(self.allocator);
+                continue;
+            };
+            if (!visible_ids.contains(id) or !isTileableWindow(summary.*, screen)) {
                 summary.deinit(self.allocator);
                 continue;
             }
@@ -108,6 +114,10 @@ pub const SpaceState = struct {
                 .pid = pid,
                 .floating = false,
             });
+            errdefer if (self.windows.fetchRemove(id)) |entry| {
+                var value = entry.value;
+                value.deinit(self.allocator);
+            };
             try self.window_order.append(self.allocator, id);
         }
 
@@ -174,13 +184,36 @@ pub const SpaceState = struct {
     }
 
     pub fn loadAllTileableWindowsForRunningApps(self: *SpaceState) !void {
-        try self.loadAllTileableWindowsForRunningAppsIncluding(null);
+        try self.loadRunningAppWindows(null, null, false);
     }
 
     pub fn loadAllTileableWindowsForRunningAppsIncluding(
         self: *SpaceState,
         include_window_ids: ?*const std.AutoHashMap(u64, void),
     ) !void {
+        try self.loadRunningAppWindows(null, include_window_ids, false);
+    }
+
+    pub fn loadWorkspaceWindowsForRunningApps(
+        self: *SpaceState,
+        screen: Rect,
+        include_window_ids: ?*const std.AutoHashMap(u64, void),
+    ) !void {
+        try self.loadRunningAppWindows(screen, include_window_ids, true);
+    }
+
+    fn loadRunningAppWindows(
+        self: *SpaceState,
+        screen: ?Rect,
+        include_window_ids: ?*const std.AutoHashMap(u64, void),
+        restrict_to_current_space: bool,
+    ) !void {
+        var visible_ids: ?std.AutoHashMap(u64, void) = null;
+        defer if (visible_ids) |*ids| ids.deinit();
+        if (restrict_to_current_space) {
+            visible_ids = try self.currentSpaceWindowIds(screen);
+        }
+
         const panda_pid: i32 = @intCast(ax.c.pandaCurrentProcessId());
         const apps = try ax.listRunningGuiApps(self.allocator);
         defer {
@@ -198,11 +231,17 @@ pub const SpaceState = struct {
             defer self.allocator.free(summaries);
 
             for (summaries) |*summary| {
-                const id = ax.windowId(summary.element);
+                const id = ax.stableWindowId(summary.element) orelse {
+                    summary.deinit(self.allocator);
+                    continue;
+                };
                 const is_included = if (include_window_ids) |ids| ids.contains(id) else false;
-                if (ax.isWindowMinimized(summary.element) or
+                const is_visible = if (visible_ids) |*ids| ids.contains(id) else true;
+                const manage_screen: ?Rect = if (is_included) null else screen;
+                if ((!is_included and !is_visible) or
+                    ax.isWindowMinimized(summary.element) or
                     self.windows.contains(id) or
-                    !isManageableWindow(summary.*, null, is_included))
+                    !isManageableWindow(summary.*, manage_screen, is_included))
                 {
                     summary.deinit(self.allocator);
                     continue;
@@ -217,6 +256,10 @@ pub const SpaceState = struct {
                     .pid = pid,
                     .floating = false,
                 });
+                errdefer if (self.windows.fetchRemove(id)) |entry| {
+                    var value = entry.value;
+                    value.deinit(self.allocator);
+                };
                 try self.window_order.append(self.allocator, id);
             }
         }
@@ -227,16 +270,8 @@ pub const SpaceState = struct {
 
     fn loadWindowsOnCurrentSpace(self: *SpaceState, screen: Rect) !void {
         const panda_pid: i32 = @intCast(ax.c.pandaCurrentProcessId());
-        const visible_windows = try ax.listWindowsOnCurrentSpace(self.allocator);
-        defer self.allocator.free(visible_windows);
-
-        var visible_ids = std.AutoHashMap(u64, void).init(self.allocator);
+        var visible_ids = try self.currentSpaceWindowIds(screen);
         defer visible_ids.deinit();
-        for (visible_windows) |window| {
-            if (window.pid == panda_pid) continue;
-            if (!rectIntersects(window.bounds, screen)) continue;
-            try visible_ids.put(window.window_id, {});
-        }
 
         const apps = try ax.listRunningGuiApps(self.allocator);
         defer {
@@ -261,7 +296,10 @@ pub const SpaceState = struct {
             defer self.allocator.free(summaries);
 
             for (summaries) |*summary| {
-                const id = ax.windowId(summary.element);
+                const id = ax.stableWindowId(summary.element) orelse {
+                    summary.deinit(self.allocator);
+                    continue;
+                };
                 if (!visible_ids.contains(id) or ax.isWindowMinimized(summary.element) or !isTileableWindow(summary.*, screen)) {
                     summary.deinit(self.allocator);
                     continue;
@@ -287,12 +325,35 @@ pub const SpaceState = struct {
                     .pid = pid,
                     .floating = false,
                 });
+                errdefer if (self.windows.fetchRemove(id)) |entry| {
+                    var value = entry.value;
+                    value.deinit(self.allocator);
+                };
                 try self.window_order.append(self.allocator, id);
             }
         }
 
         sortWindowOrder(self.window_order.items);
         try self.rebuildLinearTree();
+    }
+
+    fn currentSpaceWindowIds(self: *SpaceState, screen: ?Rect) !std.AutoHashMap(u64, void) {
+        const panda_pid: i32 = @intCast(ax.c.pandaCurrentProcessId());
+        const visible_windows = try ax.listWindowsOnCurrentSpace(self.allocator);
+        defer self.allocator.free(visible_windows);
+
+        var visible_ids = std.AutoHashMap(u64, void).init(self.allocator);
+        errdefer visible_ids.deinit();
+
+        for (visible_windows) |window| {
+            if (window.pid == panda_pid) continue;
+            if (screen) |screen_rect| {
+                if (!rectIntersects(window.bounds, screen_rect)) continue;
+            }
+            try visible_ids.put(window.window_id, {});
+        }
+
+        return visible_ids;
     }
 
     pub fn rebuildLinearTree(self: *SpaceState) !void {
@@ -344,6 +405,7 @@ fn isManageableWindow(
     allow_small: bool,
 ) bool {
     if (!ax.isWindowStandard(summary.element)) return false;
+    if (ax.isWindowMinimized(summary.element)) return false;
     if (!allow_small and (summary.frame.width < 80 or summary.frame.height < 80)) return false;
 
     if (screen) |screen_rect| {

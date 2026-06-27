@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addIncludePath(b.path("src"));
-    exe.addCSourceFile(.{
+    exe.root_module.addCSourceFile(.{
         .file = b.path("src/frontmost.m"),
         .flags = &.{},
     });
@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkFramework("UserNotifications", .{});
     exe.root_module.linkSystemLibrary("objc", .{});
     exe.root_module.linkSystemLibrary("proc", .{});
-    exe.linkLibC();
+    exe.root_module.link_libc = true;
 
     b.installArtifact(exe);
 
@@ -39,7 +39,6 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run panda");
     run_step.dependOn(&run_cmd.step);
-    run_cmd.step.dependOn(b.getInstallStep());
 
     const check_step = b.step("check", "Compile panda");
     check_step.dependOn(&exe.step);
@@ -52,7 +51,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     tests.root_module.addIncludePath(b.path("src"));
-    tests.addCSourceFile(.{
+    tests.root_module.addCSourceFile(.{
         .file = b.path("src/frontmost.m"),
         .flags = &.{},
     });
@@ -66,23 +65,21 @@ pub fn build(b: *std.Build) void {
     tests.root_module.linkFramework("UserNotifications", .{});
     tests.root_module.linkSystemLibrary("objc", .{});
     tests.root_module.linkSystemLibrary("proc", .{});
-    tests.linkLibC();
+    tests.root_module.link_libc = true;
 
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
 
-    const home = b.graph.env_map.get("HOME") orelse "/Users/willsantiago";
+    const home = b.graph.environ_map.get("HOME") orelse @panic("HOME is required for install-cli");
     const install_dir = b.fmt("{s}/.local/bin", .{home});
     const installed_bin = b.getInstallPath(.bin, "panda");
-    const install_cli = b.addSystemCommand(&.{
-        "/bin/zsh",
-        "-lc",
-        b.fmt(
-            "mkdir -p {0s} && ln -sf {1s} {0s}/panda",
-            .{ install_dir, installed_bin },
-        ),
-    });
+    const install_dest = b.fmt("{s}/panda", .{install_dir});
+
+    const mkdir_cli_dir = b.addSystemCommand(&.{ "/bin/mkdir", "-p", install_dir });
+
+    const install_cli = b.addSystemCommand(&.{ "/bin/ln", "-sf", installed_bin, install_dest });
+    install_cli.step.dependOn(&mkdir_cli_dir.step);
     install_cli.step.dependOn(b.getInstallStep());
 
     const install_cli_step = b.step("install-cli", "Install panda into ~/.local/bin/panda");

@@ -33,21 +33,27 @@ pub const LoadedConfig = struct {
     }
 };
 
-pub fn load(allocator: std.mem.Allocator) !LoadedConfig {
+pub fn load(io: std.Io, allocator: std.mem.Allocator) !LoadedConfig {
     var loaded = LoadedConfig{
         .path = try resolvePath(allocator),
     };
+    errdefer loaded.deinit(allocator);
 
-    const file = std.fs.openFileAbsolute(loaded.path, .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.openFileAbsolute(io, loaded.path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
             loaded.settings.hotkeys = try hotkeys.buildBindings(allocator, loaded.settings.desktop, &.{});
             return loaded;
         },
         else => return err,
     };
-    defer file.close();
+    defer file.close(io);
 
-    const bytes = try file.readToEndAlloc(allocator, max_config_bytes);
+    var file_buffer: [4096]u8 = undefined;
+    var reader = file.reader(io, &file_buffer);
+    const bytes = reader.interface.allocRemaining(allocator, .limited(max_config_bytes)) catch |err| switch (err) {
+        error.ReadFailed => return reader.err.?,
+        else => return err,
+    };
     defer allocator.free(bytes);
 
     loaded.exists = true;
@@ -56,18 +62,14 @@ pub fn load(allocator: std.mem.Allocator) !LoadedConfig {
 }
 
 pub fn resolvePath(allocator: std.mem.Allocator) ![]u8 {
-    const maybe_env: ?[]u8 = std.process.getEnvVarOwned(allocator, "PANDA_CONFIG") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => null,
-        else => return err,
-    };
-
+    const maybe_env = try getenvOwned(allocator, "PANDA_CONFIG");
     if (maybe_env) |value| {
         defer allocator.free(value);
         const expanded = try expandHome(allocator, value);
         return makeAbsolutePath(allocator, expanded);
     }
 
-    const home = std.posix.getenv("HOME") orelse return error.EnvironmentVariableNotFound;
+    const home = getenv("HOME") orelse return error.EnvironmentVariableNotFound;
     const joined = try std.fs.path.join(allocator, &.{ home, ".config", "panda", "config.lua" });
     return makeAbsolutePath(allocator, joined);
 }
@@ -75,10 +77,10 @@ pub fn resolvePath(allocator: std.mem.Allocator) ![]u8 {
 fn parseConfigBytes(settings: *Settings, allocator: std.mem.Allocator, bytes: []const u8) !void {
     settings.deinit(allocator);
 
-    var parsed_hotkeys = std.ArrayList(hotkeys.HotkeyBinding){};
+    var parsed_hotkeys = std.ArrayList(hotkeys.HotkeyBinding).empty;
     defer parsed_hotkeys.deinit(allocator);
 
-    var section_stack = std.ArrayList(Section){};
+    var section_stack = std.ArrayList(Section).empty;
     defer section_stack.deinit(allocator);
     try section_stack.append(allocator, .root);
 
@@ -90,7 +92,7 @@ fn parseConfigBytes(settings: *Settings, allocator: std.mem.Allocator, bytes: []
         if (line.len == 0) continue;
 
         if (std.mem.startsWith(u8, line, "return")) {
-            line = std.mem.trimLeft(u8, line["return".len..], " \t");
+            line = std.mem.trimStart(u8, line["return".len..], " \t");
         }
         if (line.len == 0) continue;
 
@@ -98,9 +100,9 @@ fn parseConfigBytes(settings: *Settings, allocator: std.mem.Allocator, bytes: []
             if (section_stack.items.len > 1) {
                 _ = section_stack.pop();
             }
-            line = std.mem.trimLeft(u8, line[1..], " \t\r\n");
+            line = std.mem.trimStart(u8, line[1..], " \t\r\n");
             if (line.len > 0 and line[0] == ',') {
-                line = std.mem.trimLeft(u8, line[1..], " \t\r\n");
+                line = std.mem.trimStart(u8, line[1..], " \t\r\n");
             }
         }
         if (line.len == 0) continue;
@@ -448,7 +450,7 @@ fn expandHome(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
         return allocator.dupe(u8, path);
     }
 
-    const home = std.posix.getenv("HOME") orelse return allocator.dupe(u8, path);
+    const home = getenv("HOME") orelse return allocator.dupe(u8, path);
     if (path.len == 1) {
         return allocator.dupe(u8, home);
     }
@@ -456,12 +458,28 @@ fn expandHome(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.fs.path.join(allocator, &.{ home, path[2..] });
 }
 
+fn getenv(name: [*:0]const u8) ?[]const u8 {
+    const value = std.c.getenv(name) orelse return null;
+    return std.mem.span(value);
+}
+
+fn getenvOwned(allocator: std.mem.Allocator, name: [*:0]const u8) !?[]u8 {
+    const value = getenv(name) orelse return null;
+    return try allocator.dupe(u8, value);
+}
+
+fn currentPathAlloc(allocator: std.mem.Allocator) ![]u8 {
+    var buffer: [std.c.PATH_MAX]u8 = undefined;
+    const cwd = std.c.getcwd(&buffer, buffer.len) orelse return error.Unexpected;
+    return allocator.dupe(u8, std.mem.span(@as([*:0]const u8, @ptrCast(cwd))));
+}
+
 fn makeAbsolutePath(allocator: std.mem.Allocator, path: []u8) ![]u8 {
     if (std.fs.path.isAbsolute(path)) {
         return path;
     }
 
-    const cwd = try std.process.getCwdAlloc(allocator);
+    const cwd = try currentPathAlloc(allocator);
     defer allocator.free(cwd);
 
     const absolute = try std.fs.path.join(allocator, &.{ cwd, path });

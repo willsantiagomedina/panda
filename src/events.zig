@@ -7,6 +7,9 @@ const workspaces = @import("workspaces.zig");
 
 const log = std.log.scoped(.events);
 
+extern "c" fn socket(domain: c_int, socket_type: c_int, protocol: c_int) c_int;
+extern "c" fn close(fd: std.c.fd_t) c_int;
+
 pub const PerformanceOptions = struct {
     focus_poll_interval_seconds: f64 = 0.08,
     fallback_snapshot_poll_interval_seconds: f64 = 0.75,
@@ -36,18 +39,23 @@ pub fn sendControlCommand(allocator: std.mem.Allocator, command: []const u8) ![]
     const socket_path = try controlSocketPath(allocator);
     defer allocator.free(socket_path);
 
-    var stream = std.net.connectUnixSocket(socket_path) catch return CommandError.DaemonUnavailable;
-    defer stream.close();
+    const fd = socket(std.c.AF.UNIX, std.c.SOCK.STREAM, 0);
+    if (fd < 0) return CommandError.DaemonUnavailable;
+    defer _ = close(fd);
+    setCloseOnExec(fd);
 
-    _ = try std.posix.write(stream.handle, command);
-    _ = try std.posix.write(stream.handle, "\n");
+    const address = unixSocketAddress(socket_path) catch return CommandError.DaemonUnavailable;
+    if (std.c.connect(fd, @ptrCast(&address.addr), address.len) != 0) return CommandError.DaemonUnavailable;
+
+    _ = try writeFd(fd, command);
+    _ = try writeFd(fd, "\n");
 
     var response = std.ArrayList(u8).empty;
     defer response.deinit(allocator);
 
     var buffer: [256]u8 = undefined;
     while (true) {
-        const read = stream.read(&buffer) catch |err| switch (err) {
+        const read = readFd(fd, &buffer) catch |err| switch (err) {
             error.WouldBlock => break,
             else => return err,
         };
@@ -62,6 +70,67 @@ pub fn sendControlCommand(allocator: std.mem.Allocator, command: []const u8) ![]
     return response.toOwnedSlice(allocator);
 }
 
+const UnixSocketAddress = struct {
+    addr: std.c.sockaddr.un,
+    len: std.c.socklen_t,
+};
+
+fn unixSocketAddress(path: []const u8) !UnixSocketAddress {
+    var addr: std.c.sockaddr.un = undefined;
+    @memset(std.mem.asBytes(&addr), 0);
+    if (path.len >= addr.path.len) return error.NameTooLong;
+    addr.family = std.c.AF.UNIX;
+    @memcpy(addr.path[0..path.len], path);
+    addr.path[path.len] = 0;
+    return .{
+        .addr = addr,
+        .len = @intCast(@offsetOf(std.c.sockaddr.un, "path") + path.len + 1),
+    };
+}
+
+fn setCloseOnExec(fd: std.c.fd_t) void {
+    _ = std.c.fcntl(fd, @as(c_int, std.c.F.SETFD), @as(c_int, std.c.FD_CLOEXEC));
+}
+
+fn setNonBlocking(fd: std.c.fd_t) void {
+    const flags = std.c.fcntl(fd, @as(c_int, std.c.F.GETFL), @as(c_int, 0));
+    if (flags < 0) return;
+    _ = std.c.fcntl(fd, @as(c_int, std.c.F.SETFL), @as(c_int, flags | 0x0004));
+}
+
+fn readFd(fd: std.c.fd_t, buffer: []u8) !usize {
+    const result = std.c.read(fd, buffer.ptr, buffer.len);
+    if (result < 0) return errnoToIoError(std.c.errno(result));
+    return @intCast(result);
+}
+
+fn writeFd(fd: std.c.fd_t, bytes: []const u8) !usize {
+    const result = std.c.write(fd, bytes.ptr, bytes.len);
+    if (result < 0) return errnoToIoError(std.c.errno(result));
+    return @intCast(result);
+}
+
+fn deleteFilePath(allocator: std.mem.Allocator, path: []const u8) !void {
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+
+    const result = std.c.unlink(path_z.ptr);
+    if (result == 0) return;
+
+    return switch (std.c.errno(result)) {
+        .NOENT => error.FileNotFound,
+        else => error.Unexpected,
+    };
+}
+
+fn errnoToIoError(err: std.c.E) anyerror {
+    return switch (err) {
+        .AGAIN => error.WouldBlock,
+        .PIPE => error.BrokenPipe,
+        else => error.Unexpected,
+    };
+}
+
 pub const EventLoop = struct {
     allocator: std.mem.Allocator,
     options: Options = .{},
@@ -70,8 +139,8 @@ pub const EventLoop = struct {
     relayout_timer: ?ax.c.CFRunLoopTimerRef = null,
     command_timer: ?ax.c.CFRunLoopTimerRef = null,
     current_pid: ?i32 = null,
-    current_observer: ?ax.c.AXObserverRef = null,
-    current_app: ?ax.c.AXUIElementRef = null,
+    current_observer: ?ax.AXObserverRef = null,
+    current_app: ?ax.AXUIElementRef = null,
     current_space: ?state.SpaceState = null,
     current_layout: std.ArrayList(layout.Placement) = .empty,
     current_screen: state.Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
@@ -83,7 +152,7 @@ pub const EventLoop = struct {
     relayout_pending: bool = false,
     workspace_transition_until: f64 = 0,
     border_enabled: bool = true,
-    control_socket_fd: ?std.posix.socket_t = null,
+    control_socket_fd: ?std.c.fd_t = null,
     control_socket_path: ?[]u8 = null,
     order_overrides: std.AutoHashMap(i32, []u64),
     workspace_manager: workspaces.WorkspaceManager,
@@ -181,7 +250,7 @@ pub const EventLoop = struct {
     }
 
     fn installHotkeys(self: *EventLoop) void {
-        ax.c.pandaHotkeysInitialize();
+        _ = ax.c.pandaHotkeysInitialize();
         ax.c.pandaClearHotkeys();
 
         if (self.options.hotkeys.len == 0) {
@@ -297,7 +366,7 @@ pub const EventLoop = struct {
         };
         errdefer ax.c.CFRelease(observer);
 
-        const source = ax.c.AXObserverGetRunLoopSource(observer);
+        const source = ax.AXObserverGetRunLoopSource(observer);
         ax.c.CFRunLoopAddSource(self.run_loop.?, source, ax.c.kCFRunLoopDefaultMode);
 
         self.current_pid = pid;
@@ -343,6 +412,10 @@ pub const EventLoop = struct {
     }
 
     fn relayoutPid(self: *EventLoop, pid: i32) !void {
+        try self.relayoutWorkspace(pid);
+    }
+
+    fn relayoutWorkspace(self: *EventLoop, maybe_pid: ?i32) !void {
         var space = state.SpaceState.init(self.allocator);
         errdefer space.deinit();
 
@@ -363,7 +436,7 @@ pub const EventLoop = struct {
             var managed_it = self.workspace_manager.windows.iterator();
             while (managed_it.next()) |entry| try known_window_ids.put(entry.key_ptr.*, {});
 
-            space.loadAllTileableWindowsForRunningAppsIncluding(&known_window_ids) catch |err| switch (err) {
+            space.loadWorkspaceWindowsForRunningApps(screen, &known_window_ids) catch |err| switch (err) {
                 error.AppUnresponsive,
                 error.AttributeUnsupported,
                 error.InvalidPid,
@@ -378,21 +451,24 @@ pub const EventLoop = struct {
                 },
                 else => return err,
             };
-        } else space.loadWindowsForScope(self.options.scope, pid, screen) catch |err| switch (err) {
-            error.AppUnresponsive,
-            error.AttributeUnsupported,
-            error.InvalidPid,
-            error.UnsupportedTarget,
-            error.UnexpectedAxError,
-            => {
-                self.last_snapshot = .{};
-                self.clearCurrentSpace();
-                self.current_layout.clearRetainingCapacity();
-                self.syncBorders();
-                return;
-            },
-            else => return err,
-        };
+        } else {
+            const pid = maybe_pid orelse return;
+            space.loadWindowsForScope(self.options.scope, pid, screen) catch |err| switch (err) {
+                error.AppUnresponsive,
+                error.AttributeUnsupported,
+                error.InvalidPid,
+                error.UnsupportedTarget,
+                error.UnexpectedAxError,
+                => {
+                    self.last_snapshot = .{};
+                    self.clearCurrentSpace();
+                    self.current_layout.clearRetainingCapacity();
+                    self.syncBorders();
+                    return;
+                },
+                else => return err,
+            };
+        }
 
         try self.reconcileWorkspaces(&space);
         try self.filterToActiveWorkspace(&space);
@@ -418,25 +494,11 @@ pub const EventLoop = struct {
             }
         }
 
-        if (self.order_overrides.get(pid)) |override| {
-            var filtered = std.ArrayList(u64).empty;
-            defer filtered.deinit(self.allocator);
-            for (override) |window_id| {
-                if (containsWindowId(active_order.items, window_id)) {
-                    try filtered.append(self.allocator, window_id);
-                }
-            }
-            for (active_order.items) |window_id| {
-                if (!containsWindowId(filtered.items, window_id)) {
-                    try filtered.append(self.allocator, window_id);
-                }
-            }
-            @memcpy(active_order.items, filtered.items);
-        } else if (self.current_pid == pid) {
-            if (self.current_space) |*current| {
+        if (maybe_pid) |pid| {
+            if (self.order_overrides.get(pid)) |override| {
                 var filtered = std.ArrayList(u64).empty;
                 defer filtered.deinit(self.allocator);
-                for (current.window_order.items) |window_id| {
+                for (override) |window_id| {
                     if (containsWindowId(active_order.items, window_id)) {
                         try filtered.append(self.allocator, window_id);
                     }
@@ -447,6 +509,22 @@ pub const EventLoop = struct {
                     }
                 }
                 @memcpy(active_order.items, filtered.items);
+            } else if (self.current_pid == pid) {
+                if (self.current_space) |*current| {
+                    var filtered = std.ArrayList(u64).empty;
+                    defer filtered.deinit(self.allocator);
+                    for (current.window_order.items) |window_id| {
+                        if (containsWindowId(active_order.items, window_id)) {
+                            try filtered.append(self.allocator, window_id);
+                        }
+                    }
+                    for (active_order.items) |window_id| {
+                        if (!containsWindowId(filtered.items, window_id)) {
+                            try filtered.append(self.allocator, window_id);
+                        }
+                    }
+                    @memcpy(active_order.items, filtered.items);
+                }
             }
         }
 
@@ -467,15 +545,19 @@ pub const EventLoop = struct {
             => return,
             else => return err,
         };
-        for (placements) |placement| self.workspace_manager.markVisible(placement.window_id, placement.frame);
+        for (placements) |placement| {
+            if (placementMatchesSpaceWindow(&space, placement)) {
+                self.workspace_manager.markVisible(placement.window_id, placement.frame);
+            }
+        }
         self.restoring_workspace = null;
         self.workspace_transition_until = ax.c.CFAbsoluteTimeGetCurrent() +
             self.options.performance.self_event_suppression_window_seconds;
 
         try self.replaceCurrentSpace(space, screen, placements);
-        self.last_snapshot = snapshotForWindowIds(self.current_space.?.window_order.items);
+        self.last_snapshot = snapshotForSpace(&self.current_space.?);
         self.last_relayout_at = ax.c.CFAbsoluteTimeGetCurrent();
-        self.syncFocusedWindowState(pid);
+        if (maybe_pid) |pid| self.syncFocusedWindowState(pid);
         self.ensureActiveWorkspaceFocus() catch {};
     }
 
@@ -538,7 +620,20 @@ pub const EventLoop = struct {
         if (!self.relayout_pending) return;
         self.relayout_pending = false;
 
-        const pid = self.current_pid orelse return;
+        const pid = self.current_pid orelse {
+            if (self.force_full_workspace_scan) {
+                self.relayoutWorkspace(null) catch |err| switch (err) {
+                    error.AppUnresponsive,
+                    error.AttributeUnsupported,
+                    error.InvalidPid,
+                    error.UnsupportedTarget,
+                    error.UnexpectedAxError,
+                    => return,
+                    else => log.err("workspace restore failed: {s}", .{@errorName(err)}),
+                };
+            }
+            return;
+        };
         self.relayoutPid(pid) catch |err| switch (err) {
             error.AppUnresponsive,
             error.AttributeUnsupported,
@@ -581,28 +676,27 @@ pub const EventLoop = struct {
         };
 
         try space.loadWindowsForScope(self.options.scope, pid, screen);
-        return snapshotForWindowIds(space.window_order.items);
+        return snapshotForSpace(&space);
     }
 
     fn setupControlSocket(self: *EventLoop) !void {
         const socket_path = try controlSocketPath(self.allocator);
         errdefer self.allocator.free(socket_path);
 
-        std.fs.deleteFileAbsolute(socket_path) catch |err| switch (err) {
+        deleteFilePath(self.allocator, socket_path) catch |err| switch (err) {
             error.FileNotFound => {},
             else => return err,
         };
 
-        const listener = try std.posix.socket(
-            std.posix.AF.UNIX,
-            std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC | std.posix.SOCK.NONBLOCK,
-            0,
-        );
-        errdefer std.posix.close(listener);
+        const listener = socket(std.c.AF.UNIX, std.c.SOCK.STREAM, 0);
+        if (listener < 0) return error.Unexpected;
+        setCloseOnExec(listener);
+        setNonBlocking(listener);
+        errdefer _ = close(listener);
 
-        var address = try std.net.Address.initUnix(socket_path);
-        try std.posix.bind(listener, &address.any, address.getOsSockLen());
-        try std.posix.listen(listener, 8);
+        const address = try unixSocketAddress(socket_path);
+        if (std.c.bind(listener, @ptrCast(&address.addr), address.len) != 0) return error.Unexpected;
+        if (std.c.listen(listener, 8) != 0) return error.Unexpected;
 
         self.control_socket_fd = listener;
         self.control_socket_path = socket_path;
@@ -610,11 +704,11 @@ pub const EventLoop = struct {
 
     fn teardownControlSocket(self: *EventLoop) void {
         if (self.control_socket_fd) |fd| {
-            std.posix.close(fd);
+            _ = close(fd);
             self.control_socket_fd = null;
         }
         if (self.control_socket_path) |path| {
-            std.fs.deleteFileAbsolute(path) catch {};
+            deleteFilePath(self.allocator, path) catch {};
             self.allocator.free(path);
             self.control_socket_path = null;
         }
@@ -624,13 +718,17 @@ pub const EventLoop = struct {
         const listener = self.control_socket_fd orelse return;
 
         while (true) {
-            const client = std.posix.accept(listener, null, null, std.posix.SOCK.CLOEXEC | std.posix.SOCK.NONBLOCK) catch |err| switch (err) {
-                error.WouldBlock => return,
-                else => {
-                    log.err("control accept failed: {s}", .{@errorName(err)});
-                    return;
-                },
-            };
+            const client = std.c.accept(listener, null, null);
+            if (client < 0) {
+                switch (std.c.errno(client)) {
+                    .AGAIN => return,
+                    else => |err| {
+                        log.err("control accept failed: {s}", .{@tagName(err)});
+                        return;
+                    },
+                }
+            }
+            setCloseOnExec(client);
             self.handleClient(client);
         }
     }
@@ -640,7 +738,7 @@ pub const EventLoop = struct {
 
         var ids: [max_hotkey_events_per_tick]u32 = undefined;
         while (true) {
-            const count = ax.c.pandaDrainHotkeys(&ids[0], @intCast(ids.len));
+            const count = ax.c.pandaDrainHotkeys(ids[0..].ptr, @intCast(ids.len));
             if (count <= 0) return;
 
             for (ids[0..@intCast(count)]) |hotkey_id| {
@@ -735,7 +833,7 @@ pub const EventLoop = struct {
             try live_ids.append(self.allocator, id);
             try self.workspace_manager.ensureWindow(id, info.pid, info.frame, info.floating);
         }
-        try self.workspace_manager.removeMissing(live_ids.items);
+        try self.workspace_manager.removeMissingVerified(live_ids.items, self.restoring_workspace != null);
     }
 
     fn filterToActiveWorkspace(self: *EventLoop, space: *state.SpaceState) !void {
@@ -764,7 +862,11 @@ pub const EventLoop = struct {
         self.restoring_workspace = target;
         self.force_full_workspace_scan = true;
         self.last_snapshot_poll_at = 0;
-        if (self.current_pid) |pid| try self.relayoutPid(pid);
+        self.last_snapshot = .{};
+        self.clearCurrentSpace();
+        self.current_layout.clearRetainingCapacity();
+        self.syncBorders();
+        self.scheduleRelayout(self.options.performance.self_event_suppression_window_seconds);
     }
 
     fn moveFocusedWindowToWorkspace(self: *EventLoop, target: u8) !void {
@@ -791,7 +893,25 @@ pub const EventLoop = struct {
     }
 
     fn hideWorkspace(self: *EventLoop, id: u8) void {
-        for (self.workspace_manager.workspaces[id - 1].window_order.items) |window_id| self.hideWindowById(window_id);
+        var missing_from_current = std.ArrayList(u64).empty;
+        defer missing_from_current.deinit(self.allocator);
+
+        for (self.workspace_manager.workspaces[id - 1].window_order.items) |window_id| {
+            if (self.workspace_manager.windows.get(window_id)) |managed| {
+                if (managed.hidden) continue;
+            }
+            if (self.hideWindowFromCurrentSpace(window_id)) continue;
+            missing_from_current.append(self.allocator, window_id) catch return;
+        }
+
+        if (missing_from_current.items.len == 0) return;
+
+        var all = state.SpaceState.init(self.allocator);
+        defer all.deinit();
+        all.loadAllTileableWindowsForRunningApps() catch return;
+        for (missing_from_current.items) |window_id| {
+            if (all.windows.get(window_id)) |info| self.hideWindowInfo(window_id, info);
+        }
     }
 
     fn hideInactiveWorkspaces(self: *EventLoop) void {
@@ -802,12 +922,10 @@ pub const EventLoop = struct {
     }
 
     fn hideWindowById(self: *EventLoop, window_id: u64) void {
-        if (self.current_space) |*current| {
-            if (current.windows.get(window_id)) |info| {
-                self.hideWindowInfo(window_id, info);
-                return;
-            }
+        if (self.workspace_manager.windows.get(window_id)) |managed| {
+            if (managed.hidden) return;
         }
+        if (self.hideWindowFromCurrentSpace(window_id)) return;
 
         var all = state.SpaceState.init(self.allocator);
         defer all.deinit();
@@ -815,18 +933,35 @@ pub const EventLoop = struct {
         if (all.windows.get(window_id)) |info| self.hideWindowInfo(window_id, info);
     }
 
-    fn hideWindowInfo(self: *EventLoop, window_id: u64, info: state.WindowInfo) void {
-        const proportional_x = if (self.current_screen.width > 0) (info.frame.x - self.current_screen.x) / self.current_screen.width else 0;
-        const proportional_y = if (self.current_screen.height > 0) (info.frame.y - self.current_screen.y) / self.current_screen.height else 0;
-        const geometry: workspaces.HiddenGeometry = .{ .frame = info.frame, .screen = self.current_screen, .proportional_x = @max(0, @min(1, proportional_x)), .proportional_y = @max(0, @min(1, proportional_y)) };
-        if (ax.setWindowMinimized(info.element, true)) {
-            self.workspace_manager.setHidden(window_id, true, geometry);
-            return;
+    fn hideWindowFromCurrentSpace(self: *EventLoop, window_id: u64) bool {
+        if (self.current_space) |*current| {
+            if (current.windows.get(window_id)) |info| {
+                self.hideWindowInfo(window_id, info);
+                return true;
+            }
         }
+        return false;
+    }
 
-        const hidden_frame = hiddenWindowFrame(self.current_screen, info.frame);
-        ax.moveResizeWindow(info.element, hidden_frame) catch return;
+    fn hideWindowInfo(self: *EventLoop, window_id: u64, info: state.WindowInfo) void {
+        const reference_screen = if (self.current_screen.width > 0 and self.current_screen.height > 0)
+            self.current_screen
+        else
+            self.hideBounds();
+        const proportional_x = if (reference_screen.width > 0) (info.frame.x - reference_screen.x) / reference_screen.width else 0;
+        const proportional_y = if (reference_screen.height > 0) (info.frame.y - reference_screen.y) / reference_screen.height else 0;
+        const geometry: workspaces.HiddenGeometry = .{ .frame = info.frame, .screen = reference_screen, .proportional_x = @max(0, @min(1, proportional_x)), .proportional_y = @max(0, @min(1, proportional_y)) };
+        const hidden_frame = hiddenWindowFrame(self.hideBounds(), info.frame);
+        ax.setWindowPosition(info.element, hidden_frame.x, hidden_frame.y) catch return;
         self.workspace_manager.setHidden(window_id, true, geometry);
+    }
+
+    fn hideBounds(self: *EventLoop) state.Rect {
+        const all_bounds = ax.allDisplaysBounds();
+        if (all_bounds.width > 0 and all_bounds.height > 0) {
+            return .{ .x = all_bounds.x, .y = all_bounds.y, .width = all_bounds.width, .height = all_bounds.height };
+        }
+        return self.current_screen;
     }
 
     fn ensureActiveWorkspaceFocus(self: *EventLoop) !void {
@@ -851,14 +986,14 @@ pub const EventLoop = struct {
         self.last_navigation = null;
     }
 
-    fn handleClient(self: *EventLoop, client: std.posix.socket_t) void {
-        defer std.posix.close(client);
+    fn handleClient(self: *EventLoop, client: std.c.fd_t) void {
+        defer _ = close(client);
 
         var buffer: [max_command_length]u8 = undefined;
-        const read = std.posix.read(client, &buffer) catch |err| switch (err) {
+        const read = readFd(client, &buffer) catch |err| switch (err) {
             error.WouldBlock => return,
             else => {
-                _ = std.posix.write(client, "error: failed to read command\n") catch {};
+                _ = writeFd(client, "error: failed to read command\n") catch {};
                 log.err("control read failed: {s}", .{@errorName(err)});
                 return;
             },
@@ -872,7 +1007,7 @@ pub const EventLoop = struct {
             CommandError.InvalidCommand => "error: invalid command\n",
             else => "error: command failed\n",
         };
-        _ = std.posix.write(client, response) catch {};
+        _ = writeFd(client, response) catch {};
     }
 
     fn executeControlCommand(self: *EventLoop, raw: []const u8) ![]const u8 {
@@ -929,13 +1064,12 @@ pub const EventLoop = struct {
     }
 
     fn desktopStatus(self: *EventLoop) []const u8 {
-        var stream = std.io.fixedBufferStream(&self.desktop_status_buffer);
-        const writer = stream.writer();
+        var writer: std.Io.Writer = .fixed(&self.desktop_status_buffer);
         writer.print("workspace: {d}\n", .{self.workspace_manager.active}) catch return "error: status too large\n";
         for (self.workspace_manager.workspaces) |space| {
             writer.print("{d}: {d} windows{s}\n", .{ space.id, space.window_order.items.len, if (space.id == self.workspace_manager.active) " active" else "" }) catch return "error: status too large\n";
         }
-        return stream.getWritten();
+        return writer.buffered();
     }
 
     fn focusDirection(self: *EventLoop, direction: ax.Direction, arm_swap: bool) !void {
@@ -1092,7 +1226,7 @@ pub const EventLoop = struct {
     fn teardownObserver(self: *EventLoop) void {
         if (self.current_observer) |observer| {
             if (self.run_loop) |run_loop| {
-                const source = ax.c.AXObserverGetRunLoopSource(observer);
+                const source = ax.AXObserverGetRunLoopSource(observer);
                 ax.c.CFRunLoopRemoveSource(run_loop, source, ax.c.kCFRunLoopDefaultMode);
             }
             ax.c.CFRelease(observer);
@@ -1186,8 +1320,8 @@ fn commandTimerCallback(_: ax.c.CFRunLoopTimerRef, info: ?*anyopaque) callconv(.
 }
 
 fn notificationCallback(
-    _: ax.c.AXObserverRef,
-    _: ax.c.AXUIElementRef,
+    _: ax.AXObserverRef,
+    _: ax.AXUIElementRef,
     notification: ax.c.CFStringRef,
     refcon: ?*anyopaque,
 ) callconv(.c) void {
@@ -1201,8 +1335,8 @@ fn notificationCallback(
 }
 
 fn registerNotification(
-    observer: ax.c.AXObserverRef,
-    app: ax.c.AXUIElementRef,
+    observer: ax.AXObserverRef,
+    app: ax.AXUIElementRef,
     notification_name: []const u8,
     loop: *EventLoop,
 ) bool {
@@ -1313,6 +1447,18 @@ fn placementForWindow(placements: []const layout.Placement, window_id: u64) ?lay
     return null;
 }
 
+fn placementMatchesSpaceWindow(space: *const state.SpaceState, placement: layout.Placement) bool {
+    const window = space.windows.get(placement.window_id) orelse return false;
+    return rectsAlmostEqual(window.frame, placement.frame);
+}
+
+fn rectsAlmostEqual(lhs: state.Rect, rhs: state.Rect) bool {
+    return almostEqual(lhs.x, rhs.x) and
+        almostEqual(lhs.y, rhs.y) and
+        almostEqual(lhs.width, rhs.width) and
+        almostEqual(lhs.height, rhs.height);
+}
+
 test "desktop command parser accepts legacy and indexed actions" {
     try std.testing.expect(parseDesktopCommand("next").? == .next);
     try std.testing.expect(parseDesktopCommand("prev").? == .prev);
@@ -1357,23 +1503,26 @@ test "desktop workspace transitions wrap and move focused window" {
     try std.testing.expectEqual(@as(u8, 7), indexed.focused_workspace.?);
 }
 
-test "hidden workspace frame shrinks and hides beyond bottom-right" {
+test "hidden workspace frame preserves size and hides beyond display bounds" {
     const screen: state.Rect = .{ .x = 0, .y = 25, .width = 1440, .height = 875 };
     const frame: state.Rect = .{ .x = 100, .y = 200, .width = 800, .height = 600 };
 
     const hidden = hiddenWindowFrame(screen, frame);
-    try std.testing.expectEqual(@as(f64, 1), hidden.width);
-    try std.testing.expectEqual(@as(f64, 1), hidden.height);
-    try std.testing.expectEqual(screen.x + screen.width + 256, hidden.x);
-    try std.testing.expectEqual(screen.y + screen.height + 256, hidden.y);
+    try std.testing.expectEqual(frame.width, hidden.width);
+    try std.testing.expectEqual(frame.height, hidden.height);
+    try std.testing.expect(hidden.x > screen.x + screen.width + frame.width);
+    try std.testing.expect(hidden.y > screen.y + screen.height + frame.height);
 }
 
-fn hiddenWindowFrame(screen: state.Rect, _: state.Rect) state.Rect {
+fn hiddenWindowFrame(screen: state.Rect, frame: state.Rect) state.Rect {
+    const offscreen_margin = 4096.0;
+    const width = @max(1, frame.width);
+    const height = @max(1, frame.height);
     return .{
-        .x = screen.x + screen.width + 256,
-        .y = screen.y + screen.height + 256,
-        .width = 1,
-        .height = 1,
+        .x = screen.x + screen.width + offscreen_margin + width,
+        .y = screen.y + screen.height + offscreen_margin + height,
+        .width = width,
+        .height = height,
     };
 }
 
@@ -1416,13 +1565,27 @@ fn snapshotForPlacements(placements: []const layout.Placement) WindowSnapshot {
     };
 }
 
-fn snapshotForWindowIds(ids: []const u64) WindowSnapshot {
+fn snapshotForSpace(space: *const state.SpaceState) WindowSnapshot {
     var hasher = std.hash.Wyhash.init(0);
-    for (ids) |window_id| {
+    for (space.window_order.items) |window_id| {
         std.hash.autoHash(&hasher, window_id);
+        if (space.windows.get(window_id)) |window| {
+            hashRoundedFrame(&hasher, window.frame);
+        }
     }
     return .{
-        .count = ids.len,
+        .count = space.window_order.items.len,
         .digest = hasher.final(),
     };
+}
+
+fn hashRoundedFrame(hasher: *std.hash.Wyhash, frame: state.Rect) void {
+    std.hash.autoHash(hasher, roundedFrameComponent(frame.x));
+    std.hash.autoHash(hasher, roundedFrameComponent(frame.y));
+    std.hash.autoHash(hasher, roundedFrameComponent(frame.width));
+    std.hash.autoHash(hasher, roundedFrameComponent(frame.height));
+}
+
+fn roundedFrameComponent(value: f64) i64 {
+    return @intFromFloat(@round(value * 2.0));
 }
