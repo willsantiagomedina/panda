@@ -952,7 +952,12 @@ pub const EventLoop = struct {
         const proportional_y = if (reference_screen.height > 0) (info.frame.y - reference_screen.y) / reference_screen.height else 0;
         const geometry: workspaces.HiddenGeometry = .{ .frame = info.frame, .screen = reference_screen, .proportional_x = @max(0, @min(1, proportional_x)), .proportional_y = @max(0, @min(1, proportional_y)) };
         const hidden_frame = hiddenWindowFrame(self.hideBounds(), info.frame);
-        ax.setWindowPosition(info.element, hidden_frame.x, hidden_frame.y) catch return;
+        const parked = if (ax.setWindowPosition(info.element, hidden_frame.x, hidden_frame.y)) true else |_| false;
+        const needs_minimize = if (parked)
+            shouldFallbackToMinimize(toStateRect(ax.windowFrame(info.element) catch toAxRect(hidden_frame)), reference_screen)
+        else
+            true;
+        if (needs_minimize and !ax.setWindowMinimized(info.element, true)) return;
         self.workspace_manager.setHidden(window_id, true, geometry);
     }
 
@@ -1515,6 +1520,18 @@ test "hidden workspace frame preserves size and stays vertically inside display"
     try std.testing.expect(hidden.y + hidden.height <= screen.y + screen.height);
 }
 
+test "hidden workspace fallback minimizes when parking still intersects screen" {
+    const screen: state.Rect = .{ .x = 0, .y = 0, .width = 1470, .height = 924 };
+    try std.testing.expect(shouldFallbackToMinimize(
+        .{ .x = -724, .y = 38, .width = 725, .height = 912 },
+        screen,
+    ));
+    try std.testing.expect(!shouldFallbackToMinimize(
+        .{ .x = 1471, .y = 12, .width = 725, .height = 912 },
+        screen,
+    ));
+}
+
 fn hiddenWindowFrame(screen: state.Rect, frame: state.Rect) state.Rect {
     const width = @max(1, frame.width);
     const height = @max(1, frame.height);
@@ -1525,6 +1542,25 @@ fn hiddenWindowFrame(screen: state.Rect, frame: state.Rect) state.Rect {
         .width = width,
         .height = height,
     };
+}
+
+fn shouldFallbackToMinimize(parked_frame: state.Rect, screen: state.Rect) bool {
+    return rectIntersects(parked_frame, screen);
+}
+
+fn rectIntersects(lhs: state.Rect, rhs: state.Rect) bool {
+    return lhs.x < rhs.x + rhs.width and
+        lhs.x + lhs.width > rhs.x and
+        lhs.y < rhs.y + rhs.height and
+        lhs.y + lhs.height > rhs.y;
+}
+
+fn toStateRect(rect: ax.Rect) state.Rect {
+    return .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height };
+}
+
+fn toAxRect(rect: state.Rect) ax.Rect {
+    return .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height };
 }
 
 fn rectCenter(rect: state.Rect) state.Rect {
