@@ -239,7 +239,7 @@ pub const SpaceState = struct {
                 const is_visible = if (visible_ids) |*ids| ids.contains(id) else true;
                 const manage_screen: ?Rect = if (is_included) null else screen;
                 if ((!is_included and !is_visible) or
-                    (!is_included and ax.isWindowMinimized(summary.element)) or
+                    ax.isWindowMinimized(summary.element) or
                     self.windows.contains(id) or
                     !isManageableWindow(summary.*, manage_screen, is_included))
                 {
@@ -405,7 +405,7 @@ fn isManageableWindow(
     allow_small: bool,
 ) bool {
     if (!ax.isWindowStandard(summary.element)) return false;
-    if (!allow_small and ax.isWindowMinimized(summary.element)) return false;
+    if (ax.isWindowMinimized(summary.element)) return false;
     if (!allow_small and (summary.frame.width < 80 or summary.frame.height < 80)) return false;
 
     if (screen) |screen_rect| {

@@ -373,10 +373,6 @@ pub fn moveResizeWindow(window: NativeWindowRef, frame: Rect) Error!void {
     try axCall(AXUIElementSetAttributeValue(window, size_attribute, size_value));
 }
 
-pub fn windowFrame(window: NativeWindowRef) Error!Rect {
-    return copyWindowFrame(window);
-}
-
 pub fn createObserver(pid: i32, callback: AXObserverCallback) Error!AXObserverRef {
     var observer: AXObserverRef = null;
     try axCall(AXObserverCreate(pid, callback, &observer));
