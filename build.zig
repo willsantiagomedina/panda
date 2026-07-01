@@ -71,15 +71,14 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
 
-    const home = b.graph.environ_map.get("HOME") orelse @panic("HOME is required for install-cli");
-    const install_dir = b.fmt("{s}/.local/bin", .{home});
     const installed_bin = b.getInstallPath(.bin, "panda");
-    const install_dest = b.fmt("{s}/panda", .{install_dir});
-
-    const mkdir_cli_dir = b.addSystemCommand(&.{ "/bin/mkdir", "-p", install_dir });
-
-    const install_cli = b.addSystemCommand(&.{ "/bin/ln", "-sf", installed_bin, install_dest });
-    install_cli.step.dependOn(&mkdir_cli_dir.step);
+    const install_cli = b.addSystemCommand(&.{
+        "/bin/sh",
+        "-c",
+        "mkdir -p \"$HOME/.local/bin\" && ln -sf \"$1\" \"$HOME/.local/bin/panda\"",
+        "panda-install-cli",
+        installed_bin,
+    });
     install_cli.step.dependOn(b.getInstallStep());
 
     const install_cli_step = b.step("install-cli", "Install panda into ~/.local/bin/panda");
