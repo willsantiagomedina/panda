@@ -73,19 +73,11 @@ jobs:
             -k "$KEYCHAIN_PATH" \
             -P "$SIGNING_PASSWORD" \
             -T /usr/bin/codesign
-          security find-certificate \
-            -c "$PANDA_CODESIGN_IDENTITY" \
-            -p "$KEYCHAIN_PATH" > "$RUNNER_TEMP/panda-signing.crt"
-          security add-trusted-cert \
-            -r trustRoot \
-            -p codeSign \
-            -k "$KEYCHAIN_PATH" \
-            "$RUNNER_TEMP/panda-signing.crt"
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH"
-          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F "$PANDA_CODESIGN_IDENTITY"
+          security find-certificate -c "$PANDA_CODESIGN_IDENTITY" "$KEYCHAIN_PATH" >/dev/null
           echo "PANDA_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
       - name: Run tests
@@ -155,4 +147,4 @@ jobs:
           if [[ -n "${PANDA_KEYCHAIN_PATH:-}" ]]; then
             security delete-keychain "$PANDA_KEYCHAIN_PATH" || true
           fi
-          rm -f "$RUNNER_TEMP/panda-signing.p12" "$RUNNER_TEMP/panda-signing.crt"
+          rm -f "$RUNNER_TEMP/panda-signing.p12"
