@@ -73,11 +73,9 @@ jobs:
             -k "$KEYCHAIN_PATH" \
             -P "$SIGNING_PASSWORD" \
             -T /usr/bin/codesign
-          openssl pkcs12 -legacy \
-            -in "$RUNNER_TEMP/panda-signing.p12" \
-            -clcerts -nokeys \
-            -passin env:SIGNING_PASSWORD \
-            -out "$RUNNER_TEMP/panda-signing.crt"
+          security find-certificate \
+            -c "$PANDA_CODESIGN_IDENTITY" \
+            -p "$KEYCHAIN_PATH" > "$RUNNER_TEMP/panda-signing.crt"
           security add-trusted-cert \
             -r trustRoot \
             -p codeSign \
