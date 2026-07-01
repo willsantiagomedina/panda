@@ -51,6 +51,7 @@ int pandaListWindowsOnCurrentSpace(PandaWindowInfo *out_windows, int capacity);
 void *NSScreen_mainScreen(void);
 CGRect NSScreen_visibleFrame(void *screen);
 CGRect NSScreen_frame(void *screen);
+CGRect pandaMainDisplayVisibleFrame(void);
 CGRect pandaAllDisplaysBounds(void);
 
 // Accessibility permission helpers

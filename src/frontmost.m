@@ -685,6 +685,30 @@ CGRect NSScreen_frame(void *screen) {
     }
 }
 
+CGRect pandaMainDisplayVisibleFrame(void) {
+    @autoreleasepool {
+        const CGDirectDisplayID main_display_id = CGMainDisplayID();
+        const CGRect main_bounds = CGDisplayBounds(main_display_id);
+
+        for (NSScreen *screen in NSScreen.screens) {
+            NSNumber *display_id = PandaDisplayIdForScreen(screen);
+            if (display_id == nil || display_id.unsignedIntValue != main_display_id) {
+                continue;
+            }
+
+            const NSRect visible = screen.visibleFrame;
+            return CGRectMake(
+                visible.origin.x,
+                main_bounds.origin.y + main_bounds.size.height - NSMaxY(visible),
+                visible.size.width,
+                visible.size.height
+            );
+        }
+
+        return main_bounds;
+    }
+}
+
 CGRect pandaAllDisplaysBounds(void) {
     @autoreleasepool {
         NSArray<NSScreen *> *screens = NSScreen.screens;

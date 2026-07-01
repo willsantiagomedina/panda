@@ -88,6 +88,14 @@ fn runCommand(command: []const u8, args: anytype, io: std.Io, allocator: std.mem
         return;
     }
 
+    if (std.mem.eql(u8, command, "debug")) {
+        const subject = args.next() orelse return error.InvalidArguments;
+        if (args.next() != null) return error.InvalidArguments;
+        if (!std.mem.eql(u8, subject, "windows")) return error.InvalidArguments;
+        try sendDaemonCommand(allocator, try std.fmt.allocPrint(allocator, "debug {s}", .{subject}));
+        return;
+    }
+
     if (std.mem.eql(u8, command, "config")) {
         if (args.next() != null) return error.InvalidArguments;
 

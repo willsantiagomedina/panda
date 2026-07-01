@@ -160,6 +160,7 @@ pub const EventLoop = struct {
     last_observed_change_at: f64 = 0,
     last_relayout_at: f64 = 0,
     desktop_status_buffer: [384]u8 = undefined,
+    debug_status_buffer: [8192]u8 = undefined,
     force_full_workspace_scan: bool = false,
     restoring_workspace: ?workspaces.WorkspaceId = null,
     suppress_hotkey_action: ?hotkeys.HotkeyAction = null,
@@ -428,7 +429,6 @@ pub const EventLoop = struct {
         };
 
         const load_all_tileable = self.force_full_workspace_scan;
-        self.force_full_workspace_scan = false;
 
         if (load_all_tileable) {
             var known_window_ids = std.AutoHashMap(u64, void).init(self.allocator);
@@ -469,6 +469,7 @@ pub const EventLoop = struct {
                 else => return err,
             };
         }
+        self.force_full_workspace_scan = false;
 
         try self.reconcileWorkspaces(&space);
         try self.filterToActiveWorkspace(&space);
@@ -476,8 +477,13 @@ pub const EventLoop = struct {
         if (space.window_order.items.len == 0) {
             self.last_snapshot = .{};
             self.clearCurrentSpace();
+            self.current_screen = screen;
             self.current_layout.clearRetainingCapacity();
             self.syncBorders();
+            self.restoring_workspace = null;
+            self.workspace_transition_until = ax.c.CFAbsoluteTimeGetCurrent() +
+                self.options.performance.self_event_suppression_window_seconds;
+            self.last_relayout_at = ax.c.CFAbsoluteTimeGetCurrent();
             return;
         }
 
@@ -1060,6 +1066,13 @@ pub const EventLoop = struct {
             return "ok\n";
         }
 
+        if (std.mem.eql(u8, verb, "debug")) {
+            const subject = parts.next() orelse return CommandError.InvalidCommand;
+            if (parts.next() != null) return CommandError.InvalidCommand;
+            if (std.mem.eql(u8, subject, "windows")) return self.debugWindows();
+            return CommandError.InvalidCommand;
+        }
+
         return CommandError.InvalidCommand;
     }
 
@@ -1069,6 +1082,57 @@ pub const EventLoop = struct {
         for (self.workspace_manager.workspaces) |space| {
             writer.print("{d}: {d} windows{s}\n", .{ space.id, space.window_order.items.len, if (space.id == self.workspace_manager.active) " active" else "" }) catch return "error: status too large\n";
         }
+        return writer.buffered();
+    }
+
+    fn debugWindows(self: *EventLoop) []const u8 {
+        var writer: std.Io.Writer = .fixed(&self.debug_status_buffer);
+        const now = ax.c.CFAbsoluteTimeGetCurrent();
+        writer.print(
+            "debug windows active_workspace={d} current_pid={?d} focused_window={?d} previous_focused_window={?d} restoring_workspace={?d} force_full_scan={} relayout_pending={} transition_remaining_ms={d}\n",
+            .{
+                self.workspace_manager.active,
+                self.current_pid,
+                self.focused_window_id,
+                self.previous_focused_window_id,
+                self.restoring_workspace,
+                self.force_full_workspace_scan,
+                self.relayout_pending,
+                @as(i64, @intFromFloat(@max(0, self.workspace_transition_until - now) * 1000.0)),
+            },
+        ) catch return "error: debug output too large\n";
+
+        writer.print("current_screen x={d:.1} y={d:.1} w={d:.1} h={d:.1}\n", .{ self.current_screen.x, self.current_screen.y, self.current_screen.width, self.current_screen.height }) catch return "error: debug output too large\n";
+
+        for (self.workspace_manager.workspaces) |space| {
+            writer.print("workspace {d}{s} order_count={d}\n", .{ space.id, if (space.id == self.workspace_manager.active) " active" else "", space.window_order.items.len }) catch return "error: debug output too large\n";
+            for (space.window_order.items) |window_id| {
+                if (self.workspace_manager.windows.get(window_id)) |managed| {
+                    writer.print(
+                        "  window id={d} pid={d} workspace={d} hidden={} floating={} last_frame x={d:.1} y={d:.1} w={d:.1} h={d:.1}",
+                        .{ managed.window_id, managed.pid, managed.workspace, managed.hidden, managed.floating, managed.last_known_frame.x, managed.last_known_frame.y, managed.last_known_frame.width, managed.last_known_frame.height },
+                    ) catch return "error: debug output too large\n";
+                    if (managed.hidden_geometry) |geometry| {
+                        writer.print(
+                            " hidden_frame x={d:.1} y={d:.1} w={d:.1} h={d:.1} hidden_screen x={d:.1} y={d:.1} w={d:.1} h={d:.1}",
+                            .{ geometry.frame.x, geometry.frame.y, geometry.frame.width, geometry.frame.height, geometry.screen.x, geometry.screen.y, geometry.screen.width, geometry.screen.height },
+                        ) catch return "error: debug output too large\n";
+                    }
+                    writer.print("\n", .{}) catch return "error: debug output too large\n";
+                } else {
+                    writer.print("  window id={d} missing_from_manager\n", .{window_id}) catch return "error: debug output too large\n";
+                }
+            }
+        }
+
+        writer.print("current_layout count={d}\n", .{self.current_layout.items.len}) catch return "error: debug output too large\n";
+        for (self.current_layout.items) |placement| {
+            writer.print(
+                "  placement id={d} frame x={d:.1} y={d:.1} w={d:.1} h={d:.1}\n",
+                .{ placement.window_id, placement.frame.x, placement.frame.y, placement.frame.width, placement.frame.height },
+            ) catch return "error: debug output too large\n";
+        }
+
         return writer.buffered();
     }
 
@@ -1503,25 +1567,55 @@ test "desktop workspace transitions wrap and move focused window" {
     try std.testing.expectEqual(@as(u8, 7), indexed.focused_workspace.?);
 }
 
-test "hidden workspace frame preserves size and stays vertically inside display" {
+test "hidden workspace frame parks at the bottom-right corner" {
     const screen: state.Rect = .{ .x = 0, .y = 25, .width = 1440, .height = 875 };
     const frame: state.Rect = .{ .x = 100, .y = 200, .width = 800, .height = 600 };
 
     const hidden = hiddenWindowFrame(screen, frame);
     try std.testing.expectEqual(frame.width, hidden.width);
     try std.testing.expectEqual(frame.height, hidden.height);
-    try std.testing.expect(hidden.x >= screen.x + screen.width + 1);
-    try std.testing.expect(hidden.y >= screen.y);
-    try std.testing.expect(hidden.y + hidden.height <= screen.y + screen.height);
+    try std.testing.expectEqual(screen.x + screen.width - 1, hidden.x);
+    try std.testing.expectEqual(screen.y + screen.height - 1, hidden.y);
+}
+
+test "hidden workspace frame handles negative multi-display origins" {
+    const screen: state.Rect = .{ .x = -1920, .y = -120, .width = 4480, .height = 1440 };
+    const frame: state.Rect = .{ .x = -1500, .y = 40, .width = 1200, .height = 900 };
+
+    const hidden = hiddenWindowFrame(screen, frame);
+    try std.testing.expectEqual(frame.width, hidden.width);
+    try std.testing.expectEqual(frame.height, hidden.height);
+    try std.testing.expectEqual(screen.x + screen.width - 1, hidden.x);
+    try std.testing.expectEqual(screen.y + screen.height - 1, hidden.y);
+}
+
+test "hidden workspace frame preserves oversized windows" {
+    const screen: state.Rect = .{ .x = 300, .y = 20, .width = 1000, .height = 700 };
+    const frame: state.Rect = .{ .x = 350, .y = 40, .width = 1600, .height = 900 };
+
+    const hidden = hiddenWindowFrame(screen, frame);
+    try std.testing.expectEqual(frame.width, hidden.width);
+    try std.testing.expectEqual(frame.height, hidden.height);
+    try std.testing.expectEqual(screen.x + screen.width - 1, hidden.x);
+    try std.testing.expectEqual(screen.y + screen.height - 1, hidden.y);
+}
+
+test "debug windows command reports workspace state without side effects" {
+    var loop = EventLoop.init(std.testing.allocator, .{});
+    defer loop.deinit();
+
+    const response = try loop.executeControlCommand("debug windows");
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "debug windows") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "active_workspace=1") != null);
 }
 
 fn hiddenWindowFrame(screen: state.Rect, frame: state.Rect) state.Rect {
     const width = @max(1, frame.width);
     const height = @max(1, frame.height);
-    const bottom_aligned_y = screen.y + @max(0, screen.height - height) - 1;
     return .{
-        .x = screen.x + screen.width + 1,
-        .y = @max(screen.y, bottom_aligned_y),
+        .x = screen.x + screen.width - 1,
+        .y = screen.y + screen.height - 1,
         .width = width,
         .height = height,
     };

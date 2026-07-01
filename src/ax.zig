@@ -119,6 +119,7 @@ pub const c = struct {
     pub extern fn NSScreen_mainScreen() ?*anyopaque;
     pub extern fn NSScreen_visibleFrame(screen: ?*anyopaque) CGRect;
     pub extern fn NSScreen_frame(screen: ?*anyopaque) CGRect;
+    pub extern fn pandaMainDisplayVisibleFrame() CGRect;
     pub extern fn pandaAllDisplaysBounds() CGRect;
     pub extern fn pandaPromptForAccessibility() bool;
     pub extern fn pandaPostUserNotification(title: [*:0]const u8, body: [*:0]const u8) bool;
@@ -474,18 +475,25 @@ pub fn mainDisplayBounds() Rect {
 }
 
 pub fn mainDisplayVisibleFrame() Rect {
-    const screen = c.NSScreen_mainScreen();
-    if (screen == null) return mainDisplayBounds();
-
-    const visible = c.NSScreen_visibleFrame(screen);
-    const full = c.NSScreen_frame(screen);
-
+    const visible = c.pandaMainDisplayVisibleFrame();
+    if (visible.size.width <= 0 or visible.size.height <= 0) return mainDisplayBounds();
     return .{
         .x = visible.origin.x,
-        .y = full.size.height - visible.origin.y - visible.size.height,
+        .y = visible.origin.y,
         .width = visible.size.width,
         .height = visible.size.height,
     };
+}
+
+test "main display visible frame belongs to the hardware main display" {
+    const bounds = mainDisplayBounds();
+    const visible = mainDisplayVisibleFrame();
+
+    try std.testing.expect(visible.width > 0 and visible.height > 0);
+    try std.testing.expect(visible.x >= bounds.x);
+    try std.testing.expect(visible.y >= bounds.y);
+    try std.testing.expect(visible.x + visible.width <= bounds.x + bounds.width);
+    try std.testing.expect(visible.y + visible.height <= bounds.y + bounds.height);
 }
 
 pub fn allDisplaysBounds() Rect {
