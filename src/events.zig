@@ -100,13 +100,13 @@ fn setNonBlocking(fd: std.c.fd_t) void {
 
 fn readFd(fd: std.c.fd_t, buffer: []u8) !usize {
     const result = std.c.read(fd, buffer.ptr, buffer.len);
-    if (result < 0) return errnoToIoError(std.c.errno(result));
+    if (result < 0) return errnoToIoError(currentErrno());
     return @intCast(result);
 }
 
 fn writeFd(fd: std.c.fd_t, bytes: []const u8) !usize {
     const result = std.c.write(fd, bytes.ptr, bytes.len);
-    if (result < 0) return errnoToIoError(std.c.errno(result));
+    if (result < 0) return errnoToIoError(currentErrno());
     return @intCast(result);
 }
 
@@ -117,10 +117,16 @@ fn deleteFilePath(allocator: std.mem.Allocator, path: []const u8) !void {
     const result = std.c.unlink(path_z.ptr);
     if (result == 0) return;
 
-    return switch (std.c.errno(result)) {
+    return switch (currentErrno()) {
         .NOENT => error.FileNotFound,
         else => error.Unexpected,
     };
+}
+
+extern "c" fn __error() *c_int;
+
+fn currentErrno() std.c.E {
+    return @enumFromInt(__error().*);
 }
 
 fn errnoToIoError(err: std.c.E) anyerror {
@@ -726,7 +732,7 @@ pub const EventLoop = struct {
         while (true) {
             const client = std.c.accept(listener, null, null);
             if (client < 0) {
-                switch (std.c.errno(client)) {
+                switch (currentErrno()) {
                     .AGAIN => return,
                     else => |err| {
                         log.err("control accept failed: {s}", .{@tagName(err)});

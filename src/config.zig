@@ -33,32 +33,30 @@ pub const LoadedConfig = struct {
     }
 };
 
-pub fn load(io: std.Io, allocator: std.mem.Allocator) !LoadedConfig {
+pub fn load(allocator: std.mem.Allocator) !LoadedConfig {
     var loaded = LoadedConfig{
         .path = try resolvePath(allocator),
     };
     errdefer loaded.deinit(allocator);
 
-    const file = std.Io.Dir.openFileAbsolute(io, loaded.path, .{}) catch |err| switch (err) {
-        error.FileNotFound => {
-            loaded.settings.hotkeys = try hotkeys.buildBindings(allocator, loaded.settings.desktop, &.{});
-            return loaded;
-        },
-        else => return err,
-    };
-    defer file.close(io);
-
-    var file_buffer: [4096]u8 = undefined;
-    var reader = file.reader(io, &file_buffer);
-    const bytes = reader.interface.allocRemaining(allocator, .limited(max_config_bytes)) catch |err| switch (err) {
-        error.ReadFailed => return reader.err.?,
-        else => return err,
+    const bytes = (try readConfigFile(allocator, loaded.path)) orelse {
+        loaded.settings.hotkeys = try hotkeys.buildBindings(allocator, loaded.settings.desktop, &.{});
+        return loaded;
     };
     defer allocator.free(bytes);
 
     loaded.exists = true;
     try parseConfigBytes(&loaded.settings, allocator, bytes);
     return loaded;
+}
+
+fn readConfigFile(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
+    const file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer file.close();
+    return try file.readToEndAlloc(allocator, max_config_bytes);
 }
 
 pub fn resolvePath(allocator: std.mem.Allocator) ![]u8 {

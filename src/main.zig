@@ -10,16 +10,18 @@ const log = std.log.scoped(.panda);
 const launch_agent_label = "dev.givepanda.panda";
 const launch_agent_filename = launch_agent_label ++ ".plist";
 
-pub fn main(init: std.process.Init) !void {
-    const allocator = init.gpa;
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
 
-    var args = try init.minimal.args.iterateAllocator(allocator);
+    var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
 
     _ = args.next();
     const maybe_command = args.next();
-    if (maybe_command == null and try isRunningFromAppBundle(init.io, allocator)) {
-        try launchAppDaemon(init.io, allocator);
+    if (maybe_command == null and try isRunningFromAppBundle(allocator)) {
+        try launchAppDaemon(allocator);
         return;
     }
     const command = maybe_command orelse "help";
@@ -29,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    runCommand(command, &args, init.io, allocator) catch |err| switch (err) {
+    runCommand(command, &args, allocator) catch |err| switch (err) {
         error.InvalidArguments => {
             try printUsage();
             std.process.exit(1);
@@ -54,7 +56,7 @@ pub fn main(init: std.process.Init) !void {
     };
 }
 
-fn runCommand(command: []const u8, args: anytype, io: std.Io, allocator: std.mem.Allocator) !void {
+fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) !void {
     if (std.mem.eql(u8, command, "focus")) {
         const direction = args.next() orelse return error.InvalidArguments;
         if (args.next() != null) return error.InvalidArguments;
@@ -100,7 +102,7 @@ fn runCommand(command: []const u8, args: anytype, io: std.Io, allocator: std.mem
     if (std.mem.eql(u8, command, "config")) {
         if (args.next() != null) return error.InvalidArguments;
 
-        var loaded = try config.load(io, allocator);
+        var loaded = try config.load(allocator);
         defer loaded.deinit(allocator);
 
         std.debug.print("config: {s}\n", .{loaded.path});
@@ -116,19 +118,19 @@ fn runCommand(command: []const u8, args: anytype, io: std.Io, allocator: std.mem
 
     if (std.mem.eql(u8, command, "install-daemon")) {
         if (args.next() != null) return error.InvalidArguments;
-        try installDaemon(io, allocator);
+        try installDaemon(allocator);
         return;
     }
 
     if (std.mem.eql(u8, command, "uninstall-daemon")) {
         if (args.next() != null) return error.InvalidArguments;
-        try uninstallDaemon(io, allocator);
+        try uninstallDaemon(allocator);
         return;
     }
 
     if (std.mem.eql(u8, command, "daemon-status")) {
         if (args.next() != null) return error.InvalidArguments;
-        try daemonStatus(io, allocator);
+        try daemonStatus(allocator);
         return;
     }
 
@@ -140,7 +142,7 @@ fn runCommand(command: []const u8, args: anytype, io: std.Io, allocator: std.mem
             false;
         if (maybe_flag != null and !force) return error.InvalidArguments;
         if (args.next() != null) return error.InvalidArguments;
-        try updateApp(io, force);
+        try updateApp(allocator, force);
         return;
     }
 
@@ -150,7 +152,7 @@ fn runCommand(command: []const u8, args: anytype, io: std.Io, allocator: std.mem
         return;
     }
 
-    var loaded_config = try config.load(io, allocator);
+    var loaded_config = try config.load(allocator);
     defer loaded_config.deinit(allocator);
 
     if (std.mem.eql(u8, command, "list")) {
@@ -232,14 +234,14 @@ fn runCommand(command: []const u8, args: anytype, io: std.Io, allocator: std.mem
     return error.InvalidArguments;
 }
 
-fn isRunningFromAppBundle(io: std.Io, allocator: std.mem.Allocator) !bool {
-    const path = try std.process.executablePathAlloc(io, allocator);
+fn isRunningFromAppBundle(allocator: std.mem.Allocator) !bool {
+    const path = try std.fs.selfExePathAlloc(allocator);
     defer allocator.free(path);
     return std.mem.indexOf(u8, path, "/Panda.app/Contents/MacOS/") != null;
 }
 
-fn launchAppDaemon(io: std.Io, allocator: std.mem.Allocator) !void {
-    const exe_path = try std.process.executablePathAlloc(io, allocator);
+fn launchAppDaemon(allocator: std.mem.Allocator) !void {
+    const exe_path = try std.fs.selfExePathAlloc(allocator);
     defer allocator.free(exe_path);
 
     if (std.mem.indexOf(u8, exe_path, "/Applications/Panda.app/Contents/MacOS/") == null) {
@@ -255,7 +257,7 @@ fn launchAppDaemon(io: std.Io, allocator: std.mem.Allocator) !void {
             \\open "$INSTALLED_APP"
         , .{quoted_app});
         defer allocator.free(install_script);
-        _ = try runProcess(io, &.{ "/bin/zsh", "-lc", install_script });
+        _ = try runProcess(allocator, &.{ "/bin/zsh", "-lc", install_script });
         return;
     }
 
@@ -274,7 +276,7 @@ fn launchAppDaemon(io: std.Io, allocator: std.mem.Allocator) !void {
             \\} >>"$LOG_DIR/panda.err.log"
             \\open 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility' >/dev/null 2>&1 || true
         ;
-        _ = try runProcess(io, &.{ "/bin/zsh", "-lc", script });
+        _ = try runProcess(allocator, &.{ "/bin/zsh", "-lc", script });
         return;
     }
 
@@ -289,7 +291,7 @@ fn launchAppDaemon(io: std.Io, allocator: std.mem.Allocator) !void {
     , .{quoted_exe});
     defer allocator.free(script);
 
-    _ = try runProcess(io, &.{ "/bin/zsh", "-lc", script });
+    _ = try runProcess(allocator, &.{ "/bin/zsh", "-lc", script });
 }
 
 fn appBundleRoot(exe_path: []const u8) ?[]const u8 {
@@ -346,10 +348,10 @@ fn showPermissions() !void {
     , .{});
 }
 
-fn installDaemon(io: std.Io, allocator: std.mem.Allocator) !void {
-    const self_executable_path = try std.process.executablePathAlloc(io, allocator);
+fn installDaemon(allocator: std.mem.Allocator) !void {
+    const self_executable_path = try std.fs.selfExePathAlloc(allocator);
     defer allocator.free(self_executable_path);
-    const executable_path = try launchAgentExecutablePath(io, allocator, self_executable_path);
+    const executable_path = try launchAgentExecutablePath(allocator, self_executable_path);
     defer allocator.free(executable_path);
 
     const plist_path = try launchAgentPath(allocator);
@@ -359,8 +361,8 @@ fn installDaemon(io: std.Io, allocator: std.mem.Allocator) !void {
     const err_path = try userPath(allocator, "Library/Logs/panda.err.log");
     defer allocator.free(err_path);
 
-    try ensureParentDir(io, plist_path);
-    try ensureParentDir(io, log_path);
+    try ensureParentDir(plist_path);
+    try ensureParentDir(log_path);
 
     const executable_xml = try xmlEscape(allocator, executable_path);
     defer allocator.free(executable_xml);
@@ -398,9 +400,9 @@ fn installDaemon(io: std.Io, allocator: std.mem.Allocator) !void {
     defer allocator.free(plist);
 
     {
-        var plist_file = try std.Io.Dir.createFileAbsolute(io, plist_path, .{ .truncate = true });
-        defer plist_file.close(io);
-        try plist_file.writeStreamingAll(io, plist);
+        var plist_file = try std.fs.createFileAbsolute(plist_path, .{ .truncate = true });
+        defer plist_file.close();
+        try plist_file.writeAll(plist);
     }
 
     const domain = try launchctlDomain(allocator);
@@ -408,10 +410,10 @@ fn installDaemon(io: std.Io, allocator: std.mem.Allocator) !void {
     const service = try launchctlService(allocator);
     defer allocator.free(service);
 
-    _ = runProcess(io, &.{ "launchctl", "bootout", domain, plist_path }) catch {};
-    try expectProcess(io, &.{ "launchctl", "bootstrap", domain, plist_path }, "load LaunchAgent");
-    try expectProcess(io, &.{ "launchctl", "enable", service }, "enable LaunchAgent");
-    try expectProcess(io, &.{ "launchctl", "kickstart", "-k", service }, "start daemon");
+    _ = runProcess(allocator, &.{ "launchctl", "bootout", domain, plist_path }) catch {};
+    try expectProcess(allocator, &.{ "launchctl", "bootstrap", domain, plist_path }, "load LaunchAgent");
+    try expectProcess(allocator, &.{ "launchctl", "enable", service }, "enable LaunchAgent");
+    try expectProcess(allocator, &.{ "launchctl", "kickstart", "-k", service }, "start daemon");
 
     std.debug.print("panda daemon installed and started.\nLaunchAgent: {s}\n", .{plist_path});
     if (!ax.isProcessTrusted()) {
@@ -420,21 +422,21 @@ fn installDaemon(io: std.Io, allocator: std.mem.Allocator) !void {
     }
 }
 
-fn uninstallDaemon(io: std.Io, allocator: std.mem.Allocator) !void {
+fn uninstallDaemon(allocator: std.mem.Allocator) !void {
     const plist_path = try launchAgentPath(allocator);
     defer allocator.free(plist_path);
     const domain = try launchctlDomain(allocator);
     defer allocator.free(domain);
 
-    _ = runProcess(io, &.{ "launchctl", "bootout", domain, plist_path }) catch {};
-    std.Io.Dir.deleteFileAbsolute(io, plist_path) catch |err| switch (err) {
+    _ = runProcess(allocator, &.{ "launchctl", "bootout", domain, plist_path }) catch {};
+    std.fs.deleteFileAbsolute(plist_path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     };
     std.debug.print("panda daemon uninstalled.\n", .{});
 }
 
-fn updateApp(io: std.Io, force: bool) !void {
+fn updateApp(allocator: std.mem.Allocator, force: bool) !void {
     const script =
         \\set -euo pipefail
         \\INSTALLER_URL="${PANDA_INSTALLER_URL:-https://givepanda.tech/install.sh}"
@@ -453,14 +455,14 @@ fn updateApp(io: std.Io, force: bool) !void {
         \\PANDA_INSTALL_METHOD="$INSTALL_METHOD" PANDA_FORCE_INSTALL="$1" "$TMP_DIR/install.sh"
     ;
 
-    try runUpdateProcess(io, &.{ "/bin/zsh", "-f", "-c", script, "panda-update", if (force) "1" else "0" });
+    try runUpdateProcess(allocator, &.{ "/bin/zsh", "-f", "-c", script, "panda-update", if (force) "1" else "0" });
 }
 
-fn daemonStatus(io: std.Io, allocator: std.mem.Allocator) !void {
+fn daemonStatus(allocator: std.mem.Allocator) !void {
     const service = try launchctlService(allocator);
     defer allocator.free(service);
 
-    const loaded = (runProcess(io, &.{ "launchctl", "print", service }) catch null) != null;
+    const loaded = (runProcess(allocator, &.{ "launchctl", "print", service }) catch null) != null;
     std.debug.print("LaunchAgent: {s}\n", .{if (loaded) "loaded" else "not loaded"});
 
     const response = events.sendControlCommand(allocator, "border status") catch |err| switch (err) {
@@ -478,21 +480,21 @@ fn launchAgentPath(allocator: std.mem.Allocator) ![]u8 {
     return userPath(allocator, "Library/LaunchAgents/" ++ launch_agent_filename);
 }
 
-fn launchAgentExecutablePath(io: std.Io, allocator: std.mem.Allocator, self_executable_path: []const u8) ![]u8 {
+fn launchAgentExecutablePath(allocator: std.mem.Allocator, self_executable_path: []const u8) ![]u8 {
     if (std.mem.endsWith(u8, self_executable_path, "/Contents/MacOS/panda-cli")) {
         const app_executable = try std.mem.concat(allocator, u8, &.{ self_executable_path[0 .. self_executable_path.len - "panda-cli".len], "Panda" });
-        if (isExecutableFile(io, app_executable)) return app_executable;
+        if (isExecutableFile(app_executable)) return app_executable;
         allocator.free(app_executable);
     }
 
     return allocator.dupe(u8, self_executable_path);
 }
 
-fn isExecutableFile(io: std.Io, path: []const u8) bool {
-    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return false;
-    defer file.close(io);
-    const stat = file.stat(io) catch return false;
-    return (@intFromEnum(stat.permissions) & 0o111) != 0;
+fn isExecutableFile(path: []const u8) bool {
+    const file = std.fs.openFileAbsolute(path, .{}) catch return false;
+    defer file.close();
+    const stat = file.stat() catch return false;
+    return (stat.mode & 0o111) != 0;
 }
 
 fn userPath(allocator: std.mem.Allocator, suffix: []const u8) ![]u8 {
@@ -508,43 +510,39 @@ fn launchctlService(allocator: std.mem.Allocator) ![]u8 {
     return std.fmt.allocPrint(allocator, "gui/{d}/{s}", .{ std.c.getuid(), launch_agent_label });
 }
 
-fn ensureParentDir(io: std.Io, path: []const u8) !void {
+fn ensureParentDir(path: []const u8) !void {
     if (std.fs.path.dirname(path)) |parent| {
-        try std.Io.Dir.createDirPath(.cwd(), io, parent);
+        try std.fs.cwd().makePath(parent);
     }
 }
 
-fn runProcess(io: std.Io, argv: []const []const u8) !?void {
-    var child = try std.process.spawn(io, .{
-        .argv = argv,
-        .stdin = .ignore,
-        .stdout = .ignore,
-        .stderr = .ignore,
-    });
-    const term = try child.wait(io);
+fn runProcess(allocator: std.mem.Allocator, argv: []const []const u8) !?void {
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    const term = try child.spawnAndWait();
     return switch (term) {
-        .exited => |code| if (code == 0) {} else null,
+        .Exited => |code| if (code == 0) {} else null,
         else => null,
     };
 }
 
-fn expectProcess(io: std.Io, argv: []const []const u8, action: []const u8) !void {
-    if ((try runProcess(io, argv)) == null) {
+fn expectProcess(allocator: std.mem.Allocator, argv: []const []const u8, action: []const u8) !void {
+    if ((try runProcess(allocator, argv)) == null) {
         std.debug.print("panda failed to {s}.\n", .{action});
         return error.LaunchAgentFailed;
     }
 }
 
-fn runUpdateProcess(io: std.Io, argv: []const []const u8) !void {
-    var child = try std.process.spawn(io, .{
-        .argv = argv,
-        .stdin = .inherit,
-        .stdout = .inherit,
-        .stderr = .inherit,
-    });
-    const term = try child.wait(io);
+fn runUpdateProcess(allocator: std.mem.Allocator, argv: []const []const u8) !void {
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Inherit;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+    const term = try child.spawnAndWait();
     switch (term) {
-        .exited => |code| if (code == 0) return,
+        .Exited => |code| if (code == 0) return,
         else => {},
     }
     return error.UpdateFailed;
