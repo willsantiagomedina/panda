@@ -3,10 +3,53 @@
     {
       "source": "/download-dmg.sh",
       "destination": "/scripts/download-dmg.sh"
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/releases/latest/panda-macos-arm64.dmg",
+      "destination": "https://github.com/willsantiagomedina/panda/releases/latest/download/panda-macos-arm64.dmg",
+      "permanent": false
     },
     {
-      "source": "/releases/latest/:path*",
-      "destination": "/dist/:path*"
+      "source": "/releases/latest/panda-macos-arm64.dmg.sha256",
+      "destination": "https://github.com/willsantiagomedina/panda/releases/latest/download/panda-macos-arm64.dmg.sha256",
+      "permanent": false
+    },
+    {
+      "source": "/releases/latest/panda-macos-arm64.tar.gz",
+      "destination": "https://github.com/willsantiagomedina/panda/releases/latest/download/panda-macos-arm64.tar.gz",
+      "permanent": false
+    },
+    {
+      "source": "/releases/latest/panda-macos-arm64.tar.gz.sha256",
+      "destination": "https://github.com/willsantiagomedina/panda/releases/latest/download/panda-macos-arm64.tar.gz.sha256",
+      "permanent": false
+    },
+    {
+      "source": "/releases/latest/panda-release.json",
+      "destination": "https://github.com/willsantiagomedina/panda/releases/latest/download/panda-release.json",
+      "permanent": false
+    },
+    {
+      "source": "/releases/latest/panda-macos-universal.dmg",
+      "destination": "/releases/latest/panda-macos-arm64.dmg",
+      "permanent": false
+    },
+    {
+      "source": "/releases/latest/panda-macos-universal.dmg.sha256",
+      "destination": "/releases/latest/panda-macos-arm64.dmg.sha256",
+      "permanent": false
+    },
+    {
+      "source": "/releases/latest/panda-macos-universal.tar.gz",
+      "destination": "/releases/latest/panda-macos-arm64.tar.gz",
+      "permanent": false
+    },
+    {
+      "source": "/releases/latest/panda-macos-universal.tar.gz.sha256",
+      "destination": "/releases/latest/panda-macos-arm64.tar.gz.sha256",
+      "permanent": false
     }
   ]
 }

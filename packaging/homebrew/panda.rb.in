@@ -1,9 +1,16 @@
+# typed: strict
+# frozen_string_literal: true
+
+# Panda tiling window manager formula.
 class Panda < Formula
-  desc "macOS tiling window manager written in Zig"
-  homepage "https://givepanda.tech"
+  desc "Tiling window manager written in Zig"
+  homepage "https://givepanda.tech/"
   url "__PANDA_URL__"
-  sha256 "__PANDA_SHA256__"
   version "__PANDA_VERSION__"
+  sha256 "__PANDA_SHA256__"
+
+  depends_on arch: :arm64
+  depends_on macos: ">= :ventura"
 
   def install
     bin.install "panda"

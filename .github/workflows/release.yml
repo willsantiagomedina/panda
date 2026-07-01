@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-15
+    env:
+      PANDA_CODESIGN_IDENTITY: panda-codesign-certificate
+      PANDA_MACOS_VERSION: '13.0'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag and commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "invalid release tag: $GITHUB_REF_NAME" >&2
+            exit 1
+          }
+          release_commit="$(git rev-parse "$GITHUB_REF_NAME^{commit}")"
+          git fetch origin main
+          git merge-base --is-ancestor "$release_commit" origin/main || {
+            echo "release tag must point to a commit reachable from main" >&2
+            exit 1
+          }
+          echo "PANDA_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          echo "PANDA_GIT_SHA=$release_commit" >> "$GITHUB_ENV"
+
+      - name: Require release secrets
+        env:
+          SIGNING_P12: ${{ secrets.PANDA_CODESIGN_P12_BASE64 }}
+          SIGNING_PASSWORD: ${{ secrets.PANDA_CODESIGN_P12_PASSWORD }}
+          TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$SIGNING_P12" ]] || { echo "missing PANDA_CODESIGN_P12_BASE64" >&2; exit 1; }
+          [[ -n "$SIGNING_PASSWORD" ]] || { echo "missing PANDA_CODESIGN_P12_PASSWORD" >&2; exit 1; }
+          [[ -n "$TAP_DEPLOY_KEY" ]] || { echo "missing HOMEBREW_TAP_DEPLOY_KEY" >&2; exit 1; }
+
+      - name: Install Zig 0.15.2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.15.2
+
+      - name: Import stable code-signing identity
+        env:
+          SIGNING_P12: ${{ secrets.PANDA_CODESIGN_P12_BASE64 }}
+          SIGNING_PASSWORD: ${{ secrets.PANDA_CODESIGN_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/panda-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          printf '%s' "$SIGNING_P12" | base64 --decode > "$RUNNER_TEMP/panda-signing.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/panda-signing.p12" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$SIGNING_PASSWORD" \
+            -T /usr/bin/codesign
+          openssl pkcs12 -legacy \
+            -in "$RUNNER_TEMP/panda-signing.p12" \
+            -clcerts -nokeys \
+            -passin env:SIGNING_PASSWORD \
+            -out "$RUNNER_TEMP/panda-signing.crt"
+          security add-trusted-cert \
+            -r trustRoot \
+            -p codeSign \
+            -k "$KEYCHAIN_PATH" \
+            "$RUNNER_TEMP/panda-signing.crt"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F "$PANDA_CODESIGN_IDENTITY"
+          echo "PANDA_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Run tests
+        run: |
+          zig fmt --check src/*.zig build.zig
+          git diff --check
+          zig build test --summary all
+          zig build check --summary all
+
+      - name: Package release
+        run: scripts/package-release.sh
+
+      - name: Validate release artifacts
+        run: scripts/validate-release.sh
+
+      - name: Create draft release with assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --verify-tag \
+            --generate-notes \
+            --title "Panda $PANDA_VERSION" \
+            dist/panda-macos-arm64.dmg \
+            dist/panda-macos-arm64.dmg.sha256 \
+            dist/panda-macos-arm64.tar.gz \
+            dist/panda-macos-arm64.tar.gz.sha256 \
+            dist/panda-release.json
+
+      - name: Publish release as latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: willsantiagomedina/homebrew-tap
+          path: homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+
+      - name: Update Homebrew cask and formula
+        run: |
+          set -euo pipefail
+          DMG_SHA="$(shasum -a 256 dist/panda-macos-arm64.dmg | awk '{print $1}')"
+          ARCHIVE_SHA="$(shasum -a 256 dist/panda-macos-arm64.tar.gz | awk '{print $1}')"
+          RELEASE_ROOT="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          scripts/render-homebrew-cask.sh \
+            "$PANDA_VERSION" \
+            "$RELEASE_ROOT/panda-macos-arm64.dmg" \
+            "$DMG_SHA" > homebrew-tap/Casks/panda-app.rb
+          scripts/render-homebrew-formula.sh \
+            "$PANDA_VERSION" \
+            "$RELEASE_ROOT/panda-macos-arm64.tar.gz" \
+            "$ARCHIVE_SHA" > homebrew-tap/Formula/panda.rb
+          git -C homebrew-tap config user.name "github-actions[bot]"
+          git -C homebrew-tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C homebrew-tap add Casks/panda-app.rb Formula/panda.rb
+          git -C homebrew-tap diff --cached --check
+          git -C homebrew-tap commit -m "Release Panda $PANDA_VERSION"
+          git -C homebrew-tap push origin HEAD:main
+
+      - name: Clean up signing keychain
+        if: always()
+        run: |
+          if [[ -n "${PANDA_KEYCHAIN_PATH:-}" ]]; then
+            security delete-keychain "$PANDA_KEYCHAIN_PATH" || true
+          fi
+          rm -f "$RUNNER_TEMP/panda-signing.p12" "$RUNNER_TEMP/panda-signing.crt"

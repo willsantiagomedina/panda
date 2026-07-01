@@ -43,6 +43,7 @@ pub fn main(init: std.process.Init) !void {
         error.UnsupportedTarget,
         error.UnexpectedAxError,
         error.LaunchAgentFailed,
+        error.UpdateFailed,
         error.DaemonUnavailable,
         error.DaemonCommandFailed,
         => {
@@ -132,8 +133,14 @@ fn runCommand(command: []const u8, args: anytype, io: std.Io, allocator: std.mem
     }
 
     if (std.mem.eql(u8, command, "update")) {
+        const maybe_flag = args.next();
+        const force = if (maybe_flag) |flag|
+            std.mem.eql(u8, flag, "--force")
+        else
+            false;
+        if (maybe_flag != null and !force) return error.InvalidArguments;
         if (args.next() != null) return error.InvalidArguments;
-        try updateApp(io);
+        try updateApp(io, force);
         return;
     }
 
@@ -427,40 +434,26 @@ fn uninstallDaemon(io: std.Io, allocator: std.mem.Allocator) !void {
     std.debug.print("panda daemon uninstalled.\n", .{});
 }
 
-fn updateApp(io: std.Io) !void {
+fn updateApp(io: std.Io, force: bool) !void {
     const script =
         \\set -euo pipefail
-        \\DMG_URL="${PANDA_DMG_URL:-https://givepanda.tech/releases/latest/panda-macos-universal.dmg}"
+        \\INSTALLER_URL="${PANDA_INSTALLER_URL:-https://givepanda.tech/install.sh}"
         \\TMP_DIR="$(mktemp -d)"
-        \\cleanup() {
-        \\  hdiutil detach "$TMP_DIR/mount" >/dev/null 2>&1 || true
-        \\  rm -rf "$TMP_DIR"
-        \\}
-        \\trap cleanup EXIT
+        \\trap 'rm -rf "$TMP_DIR"' EXIT
         \\cute() {
         \\  printf "\033[1;95mʕ•ᴥ•ʔ\033[0m %s\n" "$1"
         \\}
-        \\cute "scampering off to fetch the freshest Panda..."
-        \\curl -fsSL "$DMG_URL" -o "$TMP_DIR/panda.dmg"
-        \\mkdir -p "$TMP_DIR/mount"
-        \\cute "opening the bamboo crate..."
-        \\hdiutil attach "$TMP_DIR/panda.dmg" -mountpoint "$TMP_DIR/mount" -nobrowse -quiet
-        \\test -d "$TMP_DIR/mount/Panda.app"
-        \\cute "putting the old panda down for a nap..."
-        \\/Applications/Panda.app/Contents/MacOS/panda-cli uninstall-daemon >/dev/null 2>&1 || true
-        \\pkill -f '/Applications/Panda.app/Contents/MacOS/Panda daemon' >/dev/null 2>&1 || true
-        \\pkill -f '/Applications/Panda.app/Contents/MacOS/panda-cli daemon' >/dev/null 2>&1 || true
-        \\cute "moving the new panda into /Applications..."
-        \\rm -rf /Applications/Panda.app
-        \\cp -R "$TMP_DIR/mount/Panda.app" /Applications/Panda.app
-        \\xattr -dr com.apple.quarantine /Applications/Panda.app >/dev/null 2>&1 || true
-        \\cute "waking panda back up..."
-        \\/Applications/Panda.app/Contents/MacOS/panda-cli install-daemon
-        \\/Applications/Panda.app/Contents/MacOS/panda-cli notify-updated >/dev/null 2>&1 || true
-        \\printf "\033[1;92mʕっ•ᴥ•ʔっ Panda is up to date!\033[0m\n"
+        \\cute "fetching Panda's verified installer..."
+        \\curl -fsSL "$INSTALLER_URL" -o "$TMP_DIR/install.sh"
+        \\chmod +x "$TMP_DIR/install.sh"
+        \\INSTALL_METHOD=direct
+        \\if command -v brew >/dev/null 2>&1 && brew list --cask panda-app >/dev/null 2>&1; then
+        \\  INSTALL_METHOD=homebrew
+        \\fi
+        \\PANDA_INSTALL_METHOD="$INSTALL_METHOD" PANDA_FORCE_INSTALL="$1" "$TMP_DIR/install.sh"
     ;
 
-    try expectProcessInherit(io, &.{ "/bin/zsh", "-lc", script }, "update Panda.app");
+    try runUpdateProcess(io, &.{ "/bin/zsh", "-f", "-c", script, "panda-update", if (force) "1" else "0" });
 }
 
 fn daemonStatus(io: std.Io, allocator: std.mem.Allocator) !void {
@@ -542,7 +535,7 @@ fn expectProcess(io: std.Io, argv: []const []const u8, action: []const u8) !void
     }
 }
 
-fn expectProcessInherit(io: std.Io, argv: []const []const u8, action: []const u8) !void {
+fn runUpdateProcess(io: std.Io, argv: []const []const u8) !void {
     var child = try std.process.spawn(io, .{
         .argv = argv,
         .stdin = .inherit,
@@ -554,8 +547,7 @@ fn expectProcessInherit(io: std.Io, argv: []const []const u8, action: []const u8
         .exited => |code| if (code == 0) return,
         else => {},
     }
-    std.debug.print("panda failed to {s}.\n", .{action});
-    return error.LaunchAgentFailed;
+    return error.UpdateFailed;
 }
 
 fn shellQuote(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
@@ -759,7 +751,7 @@ fn printUsage() !void {
         \\  panda install-daemon
         \\  panda uninstall-daemon
         \\  panda daemon-status
-        \\  panda update
+        \\  panda update [--force]
         \\  panda permissions
         \\  panda focus left|right|up|down
         \\  panda swap left|right|up|down
@@ -779,7 +771,8 @@ fn printUsage() !void {
         \\  panda config
         \\
         \\Install: curl -fsSL https://givepanda.tech/install.sh | bash
-        \\         or brew install willsantiago/tap/panda
+        \\         or brew trust --cask willsantiagomedina/tap/panda-app
+        \\            brew install --cask willsantiagomedina/tap/panda-app
         \\
         \\Accessibility permission required in System Settings > Privacy & Security > Accessibility.
         \\
@@ -830,6 +823,10 @@ fn printCommandError(err: anyerror) !void {
         ,
         error.DaemonCommandFailed =>
         \\The panda daemon rejected the command.
+        ,
+        error.UpdateFailed =>
+        \\Panda could not complete the verified update.
+        \\The existing installation was left in place or restored. Review the preceding installer error and retry.
         ,
         error.EnvironmentVariableNotFound =>
         \\panda could not resolve a home directory for config loading.

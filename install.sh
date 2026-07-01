@@ -2,245 +2,161 @@
 
 set -euo pipefail
 
-PANDA_DOWNLOAD_URL="${PANDA_DOWNLOAD_URL:-https://givepanda.tech/releases/latest/panda-macos-universal.tar.gz}"
-PANDA_INSTALL_DIR="${PANDA_INSTALL_DIR:-$HOME/.local/bin}"
-PANDA_TMP_DIR="${PANDA_TMP_DIR:-$HOME/.cache/panda-installer}"
+PANDA_RELEASE_BASE_URL="${PANDA_RELEASE_BASE_URL:-https://givepanda.tech/releases/latest}"
+PANDA_INSTALL_METHOD="${PANDA_INSTALL_METHOD:-auto}"
+PANDA_FORCE_INSTALL="${PANDA_FORCE_INSTALL:-0}"
+PANDA_APP_PATH="${PANDA_APP_PATH:-/Applications/Panda.app}"
+PANDA_SKIP_LAUNCH="${PANDA_SKIP_LAUNCH:-0}"
+PANDA_CASK="willsantiagomedina/tap/panda-app"
 
-readonly PANDA_ASCII='
-.::::::...................::::--====--======+++++++*******#####****#***###****+++++***+++++*****#**+
-.::::::...................::::--=====--=====+++++++**#################*#####***+++++++++++++++*****+
-.::::::...................::::--=====-=======+++++**#########################***+++****+++++++++++++
-.::::::...................::::--====--===+==++++++**############%%%##########***#####*******+++=====
-:::::::...................::::--=====-===+==++++++**###############%%###############**+++**++++=====
-::::::::.................:::::--=====-===+===+++++**#######################%######*****+++++++++====
-:::::::..................:::::--=====-===+===+++++**###****############%%%%%%%####*****+++++++++++==
-::::::::.................:::::--=====--==+===+++++**###**#######**###%%%%%%%%####%%%###**+++++++++++
--::-----::...............:::::--=====-===+===+++++**###############%%%%%%%%%%###########**++++====++
-=======-:...............::::::--=========+===+++++**#####%%######%%%%%%%#####%#######**##**+==--====
-+++++=-:.......::.:::...::::::--========++===+++++**####%%##########%%%#######%%######**#**+-..:-===
-=+++==--::::---------:..::::::--========+++=++++++**#########****************######*******+=:..:===+
--=+++++====--::::::--:::::::::--========+++==+++++**#######*+======---=======++++*********++====++++
-++++====-:...::::::::..:::::::--========++===++++++***#####*+===--------======+++**++============+++
-****+==-:::-----:::::..::::--==++==---===+====+++==++==+****+==--------------===+*+=================
-**#***++=-----====-:::.::=+*########*+-====--:::.::..:...-==----------::--=+***#***====+++++********
-******++-:...:::::-:::-+*###%%%%%%%###*=:......................::---::-=*###%%%%%%%%%+=++++*##%%%%%%
-******+++=:::::::::::+###%%%%%%%%%%#*=:............................:=+*#%%%%%%%%%%%%%%%*++++*##%%%%%
-***#***++*+=-:::::::+#%%%%%%%%%%##+:.........................::::::::=#%%%%%%%@@@@%%%%%%#+++*###%%%%
-*****+=-:-=+=-:::::=#%%%%%%%%***-............................:::::::::-=#%%%@@@@@@@%@@@%%#++*#######
-*++*+=--::::--:::::+#%%%%%#+=-:..............................:::::::::::-=#%####%%%@@@@%%%*+*+++++++
-#**#*+==---:--:::::+#%%%%#*-...............................::::::::::::::--=+++++#@@@@@@%%#+*+++++++
-+++++========----::=#####+:..................................::::::::::::::---=++*%@@@@@%%#***++++++
-----==========----:-*##*=....................................::::::::::::::----=+#%%%@@@%%*+*++++===
--===========+=-----:=**-............:-:......................:::::::::::::::----=#%%%%@@%%*+*++++==+
-===========++=---------.............::::.................::::-++=:::::::::::-----+#%%@@@%*++*+++++++
-===========++==------...............:::::.::.........::::::::::::::::::::::::-----=#%%%#*+++*+++++++
-===========++==--=--:............::::::::::::::::::::::::::::::::::::::::::::------=#%#*+++**+++++++
-==========+++=====-:..........::::---::::::..::::::::::::::::::::::::::::::::------===**+++***++++++
-=========+++======-:........::-+%@@@@%+::::...:::::::::::::::-=+++=-:::::::::-------===++++**+++++++
-======++++++=-----:........::*%@%%%*=#@%-::::::::::::::::::+%@@@@@@@#+-::::::-------===++++****+++++
-===++++++++=-----:........:-#@#*@%-..-#%*:....::::::::::::#@#-:=@@@%@@%=:::::-------====+++*#%%%%%%#
-++++++++**+++++==-........-*%#+@@#*#%@@@#-.......::::::::*@@+.:+@@@@#*@%+-:::-------===++++*#%%%%%@@
-***********++++=-........:+%@=+@@@@@@@###-..........::::-@@@#@@@@@@%%=*@%=::::------====+***#%%%%%@@
-*********++++==-:.......:+#%%-+#**%%%%%#*:...........:::-@%@@@@@%***#+-@%*-:::------====+++*****####
-+++++++++++=====:......-+*###+:*==*##***:....-+++=....:::*##%%%%#%###--%%#=::::::-----====++++++++++
-++===---=====---:......::-+***+++*=-=+:.......:+-:...::..:+#+**+==+#--+#%##=:::::-----===---======++
-=====----===-----......:::::::::::.......:..::---:::::::...:=+==+*++*#####*+---------====---------==
-======------------....:::::::::::.......:-+=+#%%%%#**+=-::.....::--======----------=====------------
-====---------------:.:::::::::::::::::----=******#%%%=::::::::::::----------------=====-------------
-=-------------------::::::::::::::::::::-====+++++++-::::::::::::---------------======--::::--------
-----------------------:::::-----===+*+====+****##*+=-----:::::::-----------=========--:::::::::-----
-::::::::::::::----::::::::-===++++***##*-::=****####+====-----------=-============-:.....:::::::----
-::::::::::::::...........:==**+++*##%%%%#+=*+=**#%%%%%##****++++==========+====--:::.........::.::::
-::::::...........:----==--+****##*#%%%*=+*#+**##%%%%%%%%%%%%%%@@%%%##########+:....:::::::::::::::::
-::..............:--======+*##%#%%%%%*+++##***##%%%%%%%%%%%%%%%%%%@@@@@@@@@@@%%+:...:::---:::::::::::
-:::::::::::........:==-=*###%%%%*=:-==+#%#%%%%%%%%%%%%%%%%%%%%%%%%%@@@@@@@@@%%#=:...::::-====---::::
-.::-=---------::::--:..-*#####*::-=++*#%@%%%%%%%%%%%%%%%%%@@@@@@@%@@@@@@@@@@%#*=-:.....:::::::::::--
------==+===-:..:-==-...-+***-::=++*#*%@@@@%%%%%%@@@@@@@@@@@@@@@@@@@@@@@%%%%%#*===-:::::......::-=+++
-...............--:.....:=*-:+++***#%@%#@%%##%%%%@@@@@@@@@@@@@@@@@@@@@@@%%#*++=====:.......::::::::::
-.............:-..........-+++***#%@@@###**+***%%@@@@@@@@@@@@@@@@@@@@@%#*+=----=====::::::::........:
-..................::::::-=+***#@@@%##*+=====++++*%%@@@@@@@@@@@@@@@%%*=---------====:................
-.............:-=+=+******###%%#**++===-:::--====+++*##%%@@@@@@%##+=----:::------====++==-:........::
-:..........:+**####%%%%%%%@@@%%#+---:::::::::---=====+++++++***####**+---------=====*#****+-..::::::
-..........:+*#%%%%#*#%%@@@@@@@%%*=---::::::::::-----=====+#######%%%#%%%+-------===+##%#####=::::::-
-..........++#%*++##+*%%%%@@@@@@%#=----:::::::::--------+#%%%%%%%%%%%%%%%%%*----====+%@@@%%%%#-:::::-
-..........+######%%%%%%%%%@@@@@@%*=-------:-::-------=*%%%%*+#%%%%%%%%@%%%%#+======*%@@@@@%%#=::::::
-.......:..:*#++#%*++++##%%%%@@@@%#+==---------------=#%%%%#++##==*%%*%%%%@@%#=====+%@@@@@%%%#=::::::
-..:....::::-*%%%#++++++##%%%@@@@@%#++====--------===*#%%##%%%%%##%##%%%%%@@@%+==++*%@@@%%%%%#-::::::
-::::::::....:+#%%*++***#%%%@@@@@@@%#*+=============+#%#%%#+===+#%*++#%%%@@@@%*++++%@@@@%%%%#-::::::-
-:::......::.:::*#%%%%%%#%@@@@@@@%@@@##*+++=====++++*#%#%%*++++++#%%%%%%%@@@@%*++*@@@@@@@@@%**+==--::
-::::::..::::::::-*%%%%%@%%%%@@@@@@@@@@%##**********#%%%%%#++++++*%%%%%%@@@@%#**#%%%%%%##****+++=====
-::::---:::::::::-=+*##%%%%####**+++*****############%@@%%%%****#%%%%@@@@@@%#######*********+++++++++
-:::.-=+++==--:::::-=========================--==++**##%%%%%%%%%%%%@@@@@@@%%##*******++++++++++++++==
-:::::-+**++++++--++++=::------------===-----========+**#%%@@%%%%@@@@@@@%%##****+++++++++++*******+==
-:::::::::-+*##*++++++-::::::::-=-::::-==-:------------===+++***#####*******++++++++++++++********+==
-:::::::::::::::=+**++=-::.::::---==--::::::::::::::--------===============+++++**####***++*#####**++
-::::::::::::::::::::::::::::::.::::::::::::--==+++++++===-===-----:::::--==++****###########**++++++
-------:::::.::::::::::::.:...:::::::::::-+++++++++++++==++++++++=---------=+++**##%%##***+++========
-+====-=-:---------:::::::::::::::::::-=+===========--=+***+++==------------=++***+++++++++++========
---===+++++*=-==--==---------:::::--:::::::::::::::::=+=---::::-:-----------------===================
-:::::::------+++*****++========-:---::::-:::::::::::::::::::::::::::------------==------====-=======
-:::-----------:::-------==+++**++++++=----=---=-----:--:::::::--::---------------=-------===========
-------------::::::::::-----------=====+++****+=====---------------------------------================
-==------::--::::::::::----------------===----=====++***+++=+++=============--=======================
-=------------:::::::--------------:-==-------------=========+++****+*+++++++========================
-===-----------:--------------------:--------------==================+++++*****###***++++++++++++====
-========-------------------===------------------------================+++++++++++++*****************
-============------------==----------------------------=============++===========+++++++++***********
-================--=====--------------------------------=========+++==============++=+++++++*********
-================++=======-----------------------------=======++===================+++++++++*********
-============+++====================--------------=========++======================++++++++++*********
-'
+say() { printf 'ʕ•ᴥ•ʔ  %s\n' "$*"; }
+fail() { printf 'panda install: %s\n' "$*" >&2; exit 1; }
+need_cmd() { command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"; }
 
-say() {
-  printf '%s\n' "$*"
+require_supported_mac() {
+  [[ "$(uname -s)" == "Darwin" ]] || fail "Panda currently supports only macOS"
+  [[ "$(uname -m)" == "arm64" ]] || fail "this Panda release supports Apple Silicon only"
+  local major
+  major="$(sw_vers -productVersion | cut -d. -f1)"
+  (( major >= 13 )) || fail "Panda requires macOS 13 Ventura or newer"
 }
 
-fail() {
-  say "panda install: $*" >&2
-  exit 1
+install_with_homebrew() {
+  say "using Homebrew to install Panda"
+  brew tap willsantiagomedina/tap
+  brew update
+  if brew help trust >/dev/null 2>&1; then
+    brew trust --cask "$PANDA_CASK"
+  fi
+  if brew list --cask panda-app >/dev/null 2>&1; then
+    if [[ "$PANDA_FORCE_INSTALL" == "1" ]]; then
+      brew reinstall --cask "$PANDA_CASK"
+    else
+      brew upgrade --cask "$PANDA_CASK"
+    fi
+  else
+    brew install --cask "$PANDA_CASK"
+  fi
+  xattr -dr com.apple.quarantine "$PANDA_APP_PATH" >/dev/null 2>&1 || true
+  if [[ "$PANDA_SKIP_LAUNCH" != "1" ]]; then open "$PANDA_APP_PATH"; fi
+  say "Panda is installed. Grant Accessibility once when macOS prompts."
 }
 
-need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
-}
+install_direct() {
+  for command in curl plutil shasum hdiutil codesign xattr open; do need_cmd "$command"; done
 
-cute_wait() {
-  local pid="$1"
-  local message="$2"
-  local frame=0
-  local frames=(
-    'ʕ•ᴥ•ʔ  '
-    'ʕ •ᴥ•ʔ '
-    'ʕ•ᴥ• ʔ '
-    'ʕっ•ᴥ•ʔっ'
-    'ʕづ•ᴥ•ʔづ'
-    'ʕノ•ᴥ•ʔノ'
-  )
+  local tmp_dir mount_dir manifest expected_sha actual_sha version source_app
+  tmp_dir="$(mktemp -d)"
+  mount_dir="$tmp_dir/mount"
+  mkdir -p "$mount_dir"
+  cleanup() {
+    hdiutil detach "$mount_dir" >/dev/null 2>&1 || true
+    rm -rf "$tmp_dir"
+  }
+  trap cleanup EXIT
 
-  printf '\033[?25l' >&2
-  while kill -0 "$pid" >/dev/null 2>&1; do
-    printf '\r\033[2K\033[1;95m%s\033[0m %s' "${frames[$((frame % ${#frames[@]}))]}" "$message" >&2
-    sleep 0.12
-    frame=$((frame + 1))
-  done
-  wait "$pid"
-  local status=$?
-  printf '\r\033[2K' >&2
-  printf '\033[?25h' >&2
-  return "$status"
-}
+  manifest="$tmp_dir/panda-release.json"
+  say "fetching the latest release manifest"
+  curl -fsSL "$PANDA_RELEASE_BASE_URL/panda-release.json" -o "$manifest"
+  version="$(plutil -extract version raw -o - "$manifest")"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "release manifest contains an invalid version"
+  [[ "$(plutil -extract architecture raw -o - "$manifest")" == "arm64" ]] || fail "release architecture is not arm64"
+  expected_sha="$(plutil -extract dmg.sha256 raw -o - "$manifest")"
+  [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || fail "release manifest contains an invalid DMG checksum"
 
-run_cute() {
-  local message="$1"
-  shift
-  "$@" &
-  cute_wait "$!" "$message"
-}
+  if [[ -f "$PANDA_APP_PATH/Contents/Info.plist" && "$PANDA_FORCE_INSTALL" != "1" ]]; then
+    current_version="$(plutil -extract CFBundleShortVersionString raw -o - "$PANDA_APP_PATH/Contents/Info.plist" 2>/dev/null || true)"
+    if [[ "$current_version" == "$version" ]]; then
+      say "Panda $version is already installed"
+      cleanup
+      trap - EXIT
+      return
+    fi
+  fi
 
-show_banner() {
-  printf '\033[?25l'
-  trap 'printf "\033[0m\033[?25h"' EXIT
+  say "downloading Panda $version"
+  curl -fsSL "$PANDA_RELEASE_BASE_URL/panda-macos-arm64.dmg" -o "$tmp_dir/panda.dmg"
+  actual_sha="$(shasum -a 256 "$tmp_dir/panda.dmg" | awk '{print $1}')"
+  [[ "$actual_sha" == "$expected_sha" ]] || fail "DMG checksum verification failed; the current app was not changed"
 
-  local frame line row start stop
-  frame=0
-  while [ "$frame" -lt 12 ]; do
-    printf '\033[H\033[2J'
-    row=0
-    while IFS= read -r line; do
-      [ -z "$line" ] && continue
-      start=$((frame - 1))
-      stop=$((frame + 6))
-      if [ "$row" -ge "$start" ] && [ "$row" -le "$stop" ]; then
-        printf '\033[1;97m%s\033[0m\n' "$line"
-      elif [ $((row % 3)) -eq $((frame % 3)) ]; then
-        printf '\033[37m%s\033[0m\n' "$line"
-      else
-        printf '\033[90m%s\033[0m\n' "$line"
-      fi
-      row=$((row + 1))
-    done <<EOF
-$PANDA_ASCII
-EOF
-    printf '\n\033[1;97mInstalling panda\033[0m '
-    case $((frame % 4)) in
-      0) printf '[-   ]\n' ;;
-      1) printf '[--  ]\n' ;;
-      2) printf '[--- ]\n' ;;
-      3) printf '[----]\n' ;;
-    esac
-    sleep 0.08
-    frame=$((frame + 1))
-  done
+  hdiutil verify "$tmp_dir/panda.dmg" >/dev/null
+  hdiutil attach "$tmp_dir/panda.dmg" -mountpoint "$mount_dir" -nobrowse -quiet
+  source_app="$mount_dir/Panda.app"
+  [[ -d "$source_app" ]] || fail "DMG does not contain Panda.app"
+  codesign --verify --deep --strict "$source_app" || fail "downloaded app signature verification failed"
+  [[ "$(plutil -extract CFBundleShortVersionString raw -o - "$source_app/Contents/Info.plist")" == "$version" ]] || fail "app version does not match release manifest"
 
-  printf '\033[H\033[2J'
-  printf '\033[1;95m'
-  printf '        ʕ•ᴥ•ʔ\n'
-  printf '     ＿ノ ヽ ノ＼＿\n'
-  printf '   /　`/ ⌒Ｙ⌒ Ｙ  ヽ\n'
-  printf '  ( 　(三ヽ人　 /　  |\n'
-  printf '   |　ﾉ⌒＼ ￣￣ヽ   ノ\n'
-  printf '   ヽ＿＿＿＞､＿＿／\n'
-  printf '\033[0m'
-  printf '\n\033[1;97mPanda is getting cozy in your Mac...\033[0m\n\n'
+  local app_parent
+  app_parent="$(dirname "$PANDA_APP_PATH")"
+  local use_sudo=0
+  if [[ ! -w "$app_parent" ]]; then
+    say "administrator access is required to install into $app_parent"
+    sudo -v
+    use_sudo=1
+  fi
+  install_cmd() {
+    if [[ "$use_sudo" == "1" ]]; then sudo "$@"; else "$@"; fi
+  }
 
-  printf '\033[0m\033[?25h'
+  local staged backup
+  staged="$app_parent/.Panda.app.new.$$"
+  backup="$app_parent/.Panda.app.backup.$$"
+  install_cmd rm -rf "$staged" "$backup"
+  install_cmd cp -R "$source_app" "$staged"
+  codesign --verify --deep --strict "$staged" || fail "staged app signature verification failed"
+
+  if [[ "$PANDA_APP_PATH" == "/Applications/Panda.app" ]]; then
+    if [[ -x "$PANDA_APP_PATH/Contents/MacOS/panda-cli" ]]; then
+      "$PANDA_APP_PATH/Contents/MacOS/panda-cli" uninstall-daemon >/dev/null 2>&1 || true
+    fi
+    pkill -f '/Applications/Panda.app/Contents/MacOS/Panda daemon' >/dev/null 2>&1 || true
+    pkill -f '/Applications/Panda.app/Contents/MacOS/panda-cli daemon' >/dev/null 2>&1 || true
+  fi
+
+  if [[ -e "$PANDA_APP_PATH" ]]; then
+    install_cmd mv "$PANDA_APP_PATH" "$backup"
+  fi
+  if ! install_cmd mv "$staged" "$PANDA_APP_PATH"; then
+    [[ -e "$backup" ]] && install_cmd mv "$backup" "$PANDA_APP_PATH"
+    fail "installation failed; the previous app was restored"
+  fi
+  install_cmd xattr -dr com.apple.quarantine "$PANDA_APP_PATH" >/dev/null 2>&1 || true
+  codesign --verify --deep --strict "$PANDA_APP_PATH" || {
+    install_cmd rm -rf "$PANDA_APP_PATH"
+    [[ -e "$backup" ]] && install_cmd mv "$backup" "$PANDA_APP_PATH"
+    fail "installed app verification failed; the previous app was restored"
+  }
+  "$PANDA_APP_PATH/Contents/MacOS/panda-cli" help >/dev/null 2>&1 || {
+    install_cmd rm -rf "$PANDA_APP_PATH"
+    [[ -e "$backup" ]] && install_cmd mv "$backup" "$PANDA_APP_PATH"
+    fail "the new app could not start; the previous app was restored"
+  }
+  if [[ "$PANDA_SKIP_LAUNCH" != "1" ]] && ! open "$PANDA_APP_PATH"; then
+    install_cmd rm -rf "$PANDA_APP_PATH"
+    [[ -e "$backup" ]] && install_cmd mv "$backup" "$PANDA_APP_PATH"
+    fail "the new app did not launch; the previous app was restored"
+  fi
+  install_cmd rm -rf "$backup"
+  say "Panda $version is installed. Grant Accessibility once when macOS prompts."
+  cleanup
   trap - EXIT
 }
 
-ensure_macos() {
-  [ "$(uname -s)" = "Darwin" ] || fail "panda currently installs only on macOS"
-}
-
-download_release() {
-  local archive="$PANDA_TMP_DIR/panda.tar.gz"
-  rm -rf "$PANDA_TMP_DIR"
-  mkdir -p "$PANDA_TMP_DIR"
-  run_cute "downloading the freshest bamboo..." curl --fail --location --silent --show-error "$PANDA_DOWNLOAD_URL" -o "$archive"
-  [ -s "$archive" ] || fail "downloaded archive is empty"
-  printf '%s\n' "$archive"
-}
-
-extract_binary() {
-  local archive="$1"
-  local extract_dir="$PANDA_TMP_DIR/extract"
-  rm -rf "$extract_dir"
-  mkdir -p "$extract_dir"
-  run_cute "unpacking tiny panda tools..." tar -xzf "$archive" -C "$extract_dir"
-  [ -f "$extract_dir/panda" ] || fail "release archive did not contain a top-level 'panda' binary"
-  chmod +x "$extract_dir/panda"
-  printf '%s\n' "$extract_dir/panda"
-}
-
-install_binary() {
-  local binary="$1"
-  mkdir -p "$PANDA_INSTALL_DIR"
-  run_cute "nestling panda into ~/.local/bin..." cp "$binary" "$PANDA_INSTALL_DIR/panda"
-  chmod +x "$PANDA_INSTALL_DIR/panda"
-  xattr -d com.apple.quarantine "$PANDA_INSTALL_DIR/panda" >/dev/null 2>&1 || true
-}
-
-finish_message() {
-  say
-  say "panda install: installed to $PANDA_INSTALL_DIR/panda"
-  if ! printf '%s' ":$PATH:" | grep -q ":$PANDA_INSTALL_DIR:"; then
-    say "panda install: add $PANDA_INSTALL_DIR to PATH if it is not already there"
-  fi
-  say "panda install: daemon installed as a per-user LaunchAgent"
-  say "panda install: run 'panda daemon-status' to verify the background service"
-  say "panda install: grant Accessibility access in System Settings > Privacy & Security > Accessibility if prompted"
-}
-
 main() {
-  ensure_macos
-  need_cmd curl
-  need_cmd tar
-  show_banner
-  local archive
-  archive="$(download_release)"
-  install_binary "$(extract_binary "$archive")"
-  say "ʕ•ᴥ•ʔ  teaching panda to run in the background..."
-  "$PANDA_INSTALL_DIR/panda" install-daemon || fail "failed to install panda daemon"
-  finish_message
+  require_supported_mac
+  case "$PANDA_INSTALL_METHOD" in
+    auto)
+      if command -v brew >/dev/null 2>&1; then install_with_homebrew; else install_direct; fi
+      ;;
+    homebrew)
+      need_cmd brew
+      install_with_homebrew
+      ;;
+    direct)
+      install_direct
+      ;;
+    *) fail "PANDA_INSTALL_METHOD must be auto, homebrew, or direct" ;;
+  esac
 }
 
 main "$@"

@@ -37,38 +37,30 @@ Panda is intentionally small: the core is Zig, the macOS bridge is Objective-C, 
 
 ## 🚀 Install
 
-### DMG install
+Panda supports Apple Silicon Macs running macOS 13 Ventura or newer.
 
-Download the latest DMG and open it:
-
-```bash
-curl -fsSL https://givepanda.tech/download-dmg.sh | bash
-```
-
-If the short route is unavailable, use the script directly:
-
-```bash
-curl -fsSL https://givepanda.tech/scripts/download-dmg.sh | bash
-```
-
-Then drag `Panda.app` into `/Applications` if prompted and open it once. Opening the app starts Panda as a per-user background service.
-
-### CLI install
+### Recommended
 
 ```bash
 curl -fsSL https://givepanda.tech/install.sh | bash
 ```
 
+The installer uses the Panda Homebrew cask when Homebrew is available. Otherwise it downloads the DMG, verifies its release-manifest SHA-256, validates the app signature, and installs it directly.
+
 ### Homebrew
 
 ```bash
-brew install willsantiago/tap/panda
+brew trust --cask willsantiagomedina/tap/panda-app
+brew install --cask willsantiagomedina/tap/panda-app
 ```
+
+The compatibility URL `https://givepanda.tech/download-dmg.sh` invokes the same verified installer.
 
 ### Release artifacts
 
-- DMG: `https://givepanda.tech/releases/latest/panda-macos-universal.dmg`
-- CLI tarball: `https://givepanda.tech/releases/latest/panda-macos-universal.tar.gz`
+- DMG: `https://givepanda.tech/releases/latest/panda-macos-arm64.dmg`
+- CLI tarball: `https://givepanda.tech/releases/latest/panda-macos-arm64.tar.gz`
+- Manifest: `https://givepanda.tech/releases/latest/panda-release.json`
 
 ---
 
@@ -83,6 +75,8 @@ System Settings → Privacy & Security → Accessibility
 ```
 
 Enable `Panda.app` or the `panda` binary. If Panda is already listed but does not respond, remove the old entry and add `/Applications/Panda.app` again.
+
+Panda uses a stable self-signed code identity so macOS can preserve this approval across updates. Homebrew removes the quarantine attribute, but neither Homebrew nor Panda can grant Accessibility automatically. Panda is not Apple-notarized.
 
 Check the daemon after granting permission:
 
@@ -146,6 +140,7 @@ zig build install-cli -Doptimize=ReleaseFast
 | `panda apps` | List running GUI apps Panda can target. |
 | `panda active` | Show the current frontmost app. |
 | `panda config` | Show the resolved config path and load status. |
+| `panda update [--force]` | Upgrade through Homebrew or the verified direct installer. |
 
 ---
 
@@ -280,32 +275,58 @@ zig build run -- daemon --scope all-main-display --layout bsp
 | `src/frontmost.m` / `src/frontmost.h` | AppKit, AX, Carbon hotkeys, desktop/window queries, and border overlays. |
 | `examples/config.lua` | Full Lua-style config example. |
 | `scripts/package-release.sh` | Build CLI tarball and, by default, the DMG. |
-| `scripts/package-dmg.sh` | Build `Panda.app` and `panda-macos-universal.dmg` using the app logo. |
+| `scripts/package-dmg.sh` | Build and sign `Panda.app` inside the arm64 DMG. |
+| `scripts/validate-release.sh` | Validate release checksums, architecture, versions, signatures, and DMG layout. |
 
 ---
 
 ## 📦 Packaging
 
-Build the release tarball and DMG:
+Build an ad-hoc signed local release for validation:
 
 ```bash
-scripts/package-release.sh
+PANDA_VERSION=0.1.0 PANDA_CODESIGN_IDENTITY=- scripts/package-release.sh
+PANDA_VERSION=0.1.0 scripts/validate-release.sh
 ```
 
-Build only the app DMG from an existing binary:
+Production tags use the long-lived `panda-codesign-certificate` imported by GitHub Actions. Build only the app DMG from an existing binary with:
 
 ```bash
+PANDA_VERSION=0.1.0 \
+PANDA_CODESIGN_IDENTITY=panda-codesign-certificate \
 SKIP_BUILD=1 scripts/package-dmg.sh
 ```
 
 Packaging outputs land in `dist/`:
 
-- `panda-macos-universal.tar.gz`
-- `panda-macos-universal.tar.gz.sha256`
-- `panda-macos-universal.dmg`
-- `panda-macos-universal.dmg.sha256`
+- `panda-macos-arm64.tar.gz`
+- `panda-macos-arm64.tar.gz.sha256`
+- `panda-macos-arm64.dmg`
+- `panda-macos-arm64.dmg.sha256`
+- `panda-release.json`
 
 `scripts/package-dmg.sh` uses `assets/pandalogonew.png` to generate the `Panda.app` icon set.
+
+### Publishing a release
+
+Releases are created only from semantic-version tags reachable from `main`:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow tests and packages Panda on GitHub's macOS ARM runner, publishes a GitHub Release, marks it latest, and updates `willsantiagomedina/homebrew-tap`.
+
+Required repository secrets:
+
+- `PANDA_CODESIGN_P12_BASE64` — base64-encoded export of the stable self-signed certificate and private key.
+- `PANDA_CODESIGN_P12_PASSWORD` — the export password.
+- `HOMEBREW_TAP_DEPLOY_KEY` — an SSH deploy key whose public half has write access to the tap repository.
+
+The signing certificate must retain the name `panda-codesign-certificate`. Back it up securely; replacing it changes Panda's macOS code identity.
+
+See [`docs/releasing.md`](docs/releasing.md) for certificate creation, deploy-key setup, local validation, and release recovery instructions.
 
 ---
 
@@ -354,8 +375,10 @@ panda install-daemon
 
 The release site is served from this repo with Vercel rewrites:
 
-- `/download-dmg.sh` → `scripts/download-dmg.sh`
-- `/releases/latest/*` → `dist/*`
+- `/install.sh` serves the verified installer.
+- `/download-dmg.sh` remains a compatibility installer alias.
+- `/releases/latest/*` redirects to the latest GitHub Release assets.
+- Legacy `panda-macos-universal.*` URLs redirect to the arm64 artifacts.
 
 See `vercel.json` for the current routing.
 
