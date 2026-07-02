@@ -121,6 +121,9 @@ pub const c = struct {
     pub extern fn NSScreen_frame(screen: ?*anyopaque) CGRect;
     pub extern fn pandaMainDisplayVisibleFrame() CGRect;
     pub extern fn pandaAllDisplaysBounds() CGRect;
+    pub extern fn pandaVisibleFrameForRect(rect: CGRect) CGRect;
+    pub extern fn pandaDisplayConfigurationSignature() u64;
+    pub extern fn pandaDisplayCount() c_int;
     pub extern fn pandaPromptForAccessibility() bool;
     pub extern fn pandaPostUserNotification(title: [*:0]const u8, body: [*:0]const u8) bool;
     pub extern fn pandaEnsureAppKitReady() void;
@@ -400,6 +403,26 @@ pub fn focusedWindowId(pid: i32) Error!?u64 {
     return stableWindowId(window);
 }
 
+pub fn focusedWindowFrame(pid: i32) Error!?Rect {
+    const app = try createApplication(pid);
+    defer c.CFRelease(app);
+
+    const focused_attribute = try makeCfString("AXFocusedWindow");
+    defer c.CFRelease(focused_attribute);
+
+    var value: c.CFTypeRef = null;
+    const result = AXUIElementCopyAttributeValue(app, focused_attribute, &value);
+    switch (result) {
+        kAXErrorSuccess => {},
+        kAXErrorNoValue, kAXErrorAttributeUnsupported => return null,
+        else => try axCall(result),
+    }
+    defer if (value != null) c.CFRelease(value);
+
+    const window = @as(AXUIElementRef, @ptrCast(value orelse return null));
+    return try copyWindowFrame(window);
+}
+
 pub fn focusWindow(window: NativeWindowRef) Error!void {
     const raise_action = try makeCfString("AXRaise");
     defer c.CFRelease(raise_action);
@@ -483,6 +506,28 @@ pub fn mainDisplayVisibleFrame() Rect {
         .width = visible.size.width,
         .height = visible.size.height,
     };
+}
+
+pub fn visibleFrameForRect(rect: Rect) Rect {
+    const visible = c.pandaVisibleFrameForRect(.{
+        .origin = .{ .x = rect.x, .y = rect.y },
+        .size = .{ .width = rect.width, .height = rect.height },
+    });
+    if (visible.size.width <= 0 or visible.size.height <= 0) return mainDisplayVisibleFrame();
+    return .{
+        .x = visible.origin.x,
+        .y = visible.origin.y,
+        .width = visible.size.width,
+        .height = visible.size.height,
+    };
+}
+
+pub fn displayConfigurationSignature() u64 {
+    return c.pandaDisplayConfigurationSignature();
+}
+
+pub fn displayCount() usize {
+    return @intCast(@max(0, c.pandaDisplayCount()));
 }
 
 test "main display visible frame belongs to the hardware main display" {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const ax = @import("ax.zig");
 const config = @import("config.zig");
 const events = @import("events.zig");
@@ -46,6 +47,7 @@ pub fn main() !void {
         error.UnexpectedAxError,
         error.LaunchAgentFailed,
         error.UpdateFailed,
+        error.DoctorFailed,
         error.DaemonUnavailable,
         error.DaemonCommandFailed,
         => {
@@ -113,6 +115,12 @@ fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) 
     if (std.mem.eql(u8, command, "permissions")) {
         if (args.next() != null) return error.InvalidArguments;
         try showPermissions();
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "doctor")) {
+        if (args.next() != null) return error.InvalidArguments;
+        try runDoctor(allocator);
         return;
     }
 
@@ -346,6 +354,155 @@ fn showPermissions() !void {
         \\Then enable Panda or panda for this user.
         \\
     , .{});
+}
+
+fn runDoctor(allocator: std.mem.Allocator) !void {
+    var failures: usize = 0;
+    var warnings: usize = 0;
+
+    std.debug.print("Panda doctor\n\n", .{});
+    if (builtin.cpu.arch == .aarch64) {
+        doctorLine("ok", "architecture", "Apple Silicon arm64");
+    } else {
+        doctorLine("fail", "architecture", "Panda releases require Apple Silicon arm64");
+        failures += 1;
+    }
+
+    const displays = ax.displayCount();
+    if (displays > 0) {
+        var message_buffer: [64]u8 = undefined;
+        const message = std.fmt.bufPrint(&message_buffer, "{d} display{s} detected", .{ displays, if (displays == 1) "" else "s" }) catch "display detection succeeded";
+        doctorLine("ok", "displays", message);
+        if (ax.focusedApplicationPid() catch null) |pid| {
+            if (ax.focusedWindowFrame(pid) catch null) |frame| {
+                const target = ax.visibleFrameForRect(frame);
+                var target_buffer: [160]u8 = undefined;
+                const target_message = std.fmt.bufPrint(&target_buffer, "x={d:.0} y={d:.0} width={d:.0} height={d:.0}", .{ target.x, target.y, target.width, target.height }) catch "focused display detected";
+                doctorLine("ok", "focused display", target_message);
+            }
+        }
+    } else {
+        doctorLine("fail", "displays", "macOS returned no active displays");
+        failures += 1;
+    }
+
+    if (ax.isProcessTrusted()) {
+        doctorLine("ok", "accessibility", "permission is enabled");
+    } else {
+        doctorLine("fail", "accessibility", "enable Panda in System Settings > Privacy & Security > Accessibility");
+        failures += 1;
+    }
+
+    if (config.load(allocator)) |loaded_value| {
+        var loaded = loaded_value;
+        defer loaded.deinit(allocator);
+        doctorLine("ok", "configuration", if (loaded.exists) loaded.path else "not present; defaults are valid");
+    } else |err| {
+        doctorLine("fail", "configuration", @errorName(err));
+        failures += 1;
+    }
+
+    const app_path = "/Applications/Panda.app";
+    const app_executable = app_path ++ "/Contents/MacOS/Panda";
+    const info_plist = app_path ++ "/Contents/Info.plist";
+    if (!isExecutableFile(app_executable)) {
+        doctorLine("fail", "application", "/Applications/Panda.app is missing or not executable");
+        failures += 1;
+    } else {
+        doctorLine("ok", "application", app_path);
+        if (try readBundleVersion(allocator, info_plist)) |version| {
+            defer allocator.free(version);
+            doctorLine("ok", "version", version);
+        } else {
+            doctorLine("warn", "version", "CFBundleShortVersionString could not be read");
+            warnings += 1;
+        }
+
+        if ((try runProcess(allocator, &.{ "/usr/bin/codesign", "--verify", "--deep", "--strict", app_path })) != null) {
+            doctorLine("ok", "signature", "bundle signature is structurally valid");
+        } else {
+            doctorLine("fail", "signature", "codesign verification failed");
+            failures += 1;
+        }
+    }
+
+    const brew: ?[]const u8 = if (isExecutableFile("/opt/homebrew/bin/brew"))
+        "/opt/homebrew/bin/brew"
+    else if (isExecutableFile("/usr/local/bin/brew"))
+        "/usr/local/bin/brew"
+    else
+        null;
+    if (brew) |brew_path| {
+        if ((try runProcess(allocator, &.{ brew_path, "list", "--cask", "panda-app" })) != null) {
+            doctorLine("ok", "installation", "Homebrew cask");
+        } else {
+            doctorLine("ok", "installation", "direct installer");
+        }
+    } else {
+        doctorLine("ok", "installation", "direct installer (Homebrew not installed)");
+    }
+
+    const service = try launchctlService(allocator);
+    defer allocator.free(service);
+    if ((try runProcess(allocator, &.{ "/bin/launchctl", "print", service })) != null) {
+        doctorLine("ok", "daemon", "LaunchAgent is loaded");
+    } else {
+        doctorLine("fail", "daemon", "run `panda install-daemon`");
+        failures += 1;
+    }
+
+    const error_log = try userPath(allocator, "Library/Logs/panda.err.log");
+    defer allocator.free(error_log);
+    if (std.fs.openFileAbsolute(error_log, .{})) |file| {
+        defer file.close();
+        const stat = try file.stat();
+        if (stat.size > 0) {
+            doctorLine("warn", "error log", error_log);
+            warnings += 1;
+        } else {
+            doctorLine("ok", "error log", "empty");
+        }
+    } else |_| {
+        doctorLine("ok", "error log", "not created");
+    }
+
+    try doctorSummary(failures, warnings);
+}
+
+fn doctorLine(status: []const u8, name: []const u8, detail: []const u8) void {
+    std.debug.print("[{s}] {s}: {s}\n", .{ status, name, detail });
+}
+
+fn doctorSummary(failures: usize, warnings: usize) !void {
+    std.debug.print("\nsummary: {d} failure{s}, {d} warning{s}\n", .{ failures, if (failures == 1) "" else "s", warnings, if (warnings == 1) "" else "s" });
+    if (failures != 0) return error.DoctorFailed;
+}
+
+fn readBundleVersion(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
+    const file = std.fs.openFileAbsolute(path, .{}) catch return null;
+    defer file.close();
+    const bytes = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(bytes);
+    const value = plistStringValue(bytes, "CFBundleShortVersionString") orelse return null;
+    return try allocator.dupe(u8, value);
+}
+
+fn plistStringValue(bytes: []const u8, key_name: []const u8) ?[]const u8 {
+    var key_buffer: [256]u8 = undefined;
+    const key = std.fmt.bufPrint(&key_buffer, "<key>{s}</key>", .{key_name}) catch return null;
+    const key_index = std.mem.indexOf(u8, bytes, key) orelse return null;
+    const tail = bytes[key_index + key.len ..];
+    const start_marker = "<string>";
+    const start = std.mem.indexOf(u8, tail, start_marker) orelse return null;
+    const value_tail = tail[start + start_marker.len ..];
+    const end = std.mem.indexOf(u8, value_tail, "</string>") orelse return null;
+    return value_tail[0..end];
+}
+
+test "plist string extraction reads bundle version" {
+    const plist = "<dict><key>CFBundleShortVersionString</key><string>0.1.0</string></dict>";
+    try std.testing.expectEqualStrings("0.1.0", plistStringValue(plist, "CFBundleShortVersionString").?);
+    try std.testing.expect(plistStringValue(plist, "Missing") == null);
 }
 
 fn installDaemon(allocator: std.mem.Allocator) !void {
@@ -660,7 +817,10 @@ fn tileWindows(allocator: std.mem.Allocator, pid: i32, options: RuntimeOptions) 
     var space = state.SpaceState.init(allocator);
     defer space.deinit();
 
-    const screen_bounds = ax.mainDisplayVisibleFrame();
+    const screen_bounds = if (ax.focusedWindowFrame(pid) catch null) |frame|
+        ax.visibleFrameForRect(frame)
+    else
+        ax.mainDisplayVisibleFrame();
     const screen = state.Rect{
         .x = screen_bounds.x,
         .y = screen_bounds.y,
@@ -751,6 +911,7 @@ fn printUsage() !void {
         \\  panda daemon-status
         \\  panda update [--force]
         \\  panda permissions
+        \\  panda doctor
         \\  panda focus left|right|up|down
         \\  panda swap left|right|up|down
         \\  panda border on|off|toggle|status
@@ -825,6 +986,10 @@ fn printCommandError(err: anyerror) !void {
         error.UpdateFailed =>
         \\Panda could not complete the verified update.
         \\The existing installation was left in place or restored. Review the preceding installer error and retry.
+        ,
+        error.DoctorFailed =>
+        \\Panda doctor found one or more failures.
+        \\Resolve the failed checks above, then run `panda doctor` again.
         ,
         error.EnvironmentVariableNotFound =>
         \\panda could not resolve a home directory for config loading.

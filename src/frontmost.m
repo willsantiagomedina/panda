@@ -7,6 +7,7 @@
 #import <UserNotifications/UserNotifications.h>
 #import <dlfcn.h>
 #import <dispatch/dispatch.h>
+#import <math.h>
 #import <string.h>
 #import <unistd.h>
 
@@ -729,6 +730,63 @@ CGRect pandaAllDisplaysBounds(void) {
             return CGDisplayBounds(CGMainDisplayID());
         }
         return union_bounds;
+    }
+}
+
+static CGRect PandaCGVisibleFrame(NSScreen *screen, CGRect cg_bounds) {
+    const NSRect frame = screen.frame;
+    const NSRect visible = screen.visibleFrame;
+    const CGFloat local_x = visible.origin.x - frame.origin.x;
+    const CGFloat local_y = visible.origin.y - frame.origin.y;
+    return CGRectMake(
+        cg_bounds.origin.x + local_x,
+        cg_bounds.origin.y + cg_bounds.size.height - local_y - visible.size.height,
+        visible.size.width,
+        visible.size.height
+    );
+}
+
+CGRect pandaVisibleFrameForRect(CGRect rect) {
+    @autoreleasepool {
+        NSDictionary *entry = PandaScreenInfoForBounds(rect, PandaCopyScreenInfo());
+        if (entry == nil) return pandaMainDisplayVisibleFrame();
+        NSScreen *screen = entry[@"screen"];
+        const CGRect bounds = [entry[@"cg_bounds"] rectValue];
+        if (screen == nil || CGRectIsEmpty(bounds)) return pandaMainDisplayVisibleFrame();
+        return PandaCGVisibleFrame(screen, bounds);
+    }
+}
+
+uint64_t pandaDisplayConfigurationSignature(void) {
+    @autoreleasepool {
+        uint64_t hash = 1469598103934665603ULL;
+        NSArray<NSScreen *> *screens = [NSScreen.screens sortedArrayUsingComparator:^NSComparisonResult(NSScreen *lhs, NSScreen *rhs) {
+            return [PandaDisplayIdForScreen(lhs) compare:PandaDisplayIdForScreen(rhs)];
+        }];
+        for (NSScreen *screen in screens) {
+            NSNumber *display_id = PandaDisplayIdForScreen(screen);
+            if (display_id == nil) continue;
+            const CGRect bounds = CGDisplayBounds((CGDirectDisplayID)display_id.unsignedIntValue);
+            const CGRect visible = PandaCGVisibleFrame(screen, bounds);
+            const int64_t values[] = {
+                display_id.longLongValue,
+                llround(bounds.origin.x), llround(bounds.origin.y),
+                llround(bounds.size.width), llround(bounds.size.height),
+                llround(visible.origin.x), llround(visible.origin.y),
+                llround(visible.size.width), llround(visible.size.height),
+            };
+            for (NSUInteger index = 0; index < sizeof(values) / sizeof(values[0]); index++) {
+                hash ^= (uint64_t)values[index];
+                hash *= 1099511628211ULL;
+            }
+        }
+        return hash;
+    }
+}
+
+int pandaDisplayCount(void) {
+    @autoreleasepool {
+        return (int)NSScreen.screens.count;
     }
 }
 

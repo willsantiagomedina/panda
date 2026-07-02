@@ -171,6 +171,7 @@ pub const EventLoop = struct {
     restoring_workspace: ?workspaces.WorkspaceId = null,
     suppress_hotkey_action: ?hotkeys.HotkeyAction = null,
     suppress_hotkeys_until: f64 = 0,
+    display_configuration_signature: u64 = 0,
 
     pub const Options = struct {
         scope: state.SpaceState.WindowScope = .focused_app,
@@ -220,6 +221,7 @@ pub const EventLoop = struct {
         log.info("starting panda daemon event loop", .{});
 
         ax.c.pandaEnsureAppKitReady();
+        self.display_configuration_signature = ax.displayConfigurationSignature();
 
         self.run_loop = ax.c.CFRunLoopGetCurrent();
         try self.installFocusTimer();
@@ -331,6 +333,23 @@ pub const EventLoop = struct {
             return;
         }
 
+        const display_signature = ax.displayConfigurationSignature();
+        if (display_signature != self.display_configuration_signature) {
+            self.display_configuration_signature = display_signature;
+            self.force_full_workspace_scan = true;
+            self.last_snapshot = .{};
+            self.last_snapshot_poll_at = 0;
+            try self.relayoutPid(pid);
+            return;
+        }
+
+        const target_screen = self.targetScreenForPid(pid);
+        if (!sameRect(target_screen, self.current_screen)) {
+            self.last_snapshot = .{};
+            try self.relayoutPid(pid);
+            return;
+        }
+
         self.syncFocusedWindowState(pid);
 
         const snapshot_poll_interval: f64 = if (!self.notifications_enabled or
@@ -426,13 +445,7 @@ pub const EventLoop = struct {
         var space = state.SpaceState.init(self.allocator);
         errdefer space.deinit();
 
-        const screen_bounds = ax.mainDisplayVisibleFrame();
-        const screen = state.Rect{
-            .x = screen_bounds.x,
-            .y = screen_bounds.y,
-            .width = screen_bounds.width,
-            .height = screen_bounds.height,
-        };
+        const screen = if (maybe_pid) |pid| self.targetScreenForPid(pid) else self.fallbackTargetScreen();
 
         const load_all_tileable = self.force_full_workspace_scan;
 
@@ -679,16 +692,29 @@ pub const EventLoop = struct {
         var space = state.SpaceState.init(self.allocator);
         defer space.deinit();
 
-        const screen_bounds = ax.mainDisplayVisibleFrame();
-        const screen = state.Rect{
-            .x = screen_bounds.x,
-            .y = screen_bounds.y,
-            .width = screen_bounds.width,
-            .height = screen_bounds.height,
-        };
+        const screen = self.targetScreenForPid(pid);
 
         try space.loadWindowsForScope(self.options.scope, pid, screen);
         return snapshotForSpace(&space);
+    }
+
+    fn targetScreenForPid(self: *const EventLoop, pid: i32) state.Rect {
+        if (ax.focusedWindowFrame(pid) catch null) |frame| {
+            return rectFromAx(ax.visibleFrameForRect(frame));
+        }
+        return self.fallbackTargetScreen();
+    }
+
+    fn fallbackTargetScreen(self: *const EventLoop) state.Rect {
+        if (self.current_screen.width > 0 and self.current_screen.height > 0) {
+            return rectFromAx(ax.visibleFrameForRect(.{
+                .x = self.current_screen.x,
+                .y = self.current_screen.y,
+                .width = self.current_screen.width,
+                .height = self.current_screen.height,
+            }));
+        }
+        return rectFromAx(ax.mainDisplayVisibleFrame());
     }
 
     fn setupControlSocket(self: *EventLoop) !void {
@@ -1642,6 +1668,25 @@ fn intervalOverlap(start_a: f64, end_a: f64, start_b: f64, end_b: f64) f64 {
 
 fn almostEqual(a: f64, b: f64) bool {
     return @abs(a - b) < 0.5;
+}
+
+fn sameRect(lhs: state.Rect, rhs: state.Rect) bool {
+    return almostEqual(lhs.x, rhs.x) and
+        almostEqual(lhs.y, rhs.y) and
+        almostEqual(lhs.width, rhs.width) and
+        almostEqual(lhs.height, rhs.height);
+}
+
+fn rectFromAx(rect: ax.Rect) state.Rect {
+    return .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height };
+}
+
+test "display geometry comparison tolerates subpixel differences" {
+    const lhs: state.Rect = .{ .x = -1920, .y = 0, .width = 1920, .height = 1080 };
+    const nearby: state.Rect = .{ .x = -1919.75, .y = 0.2, .width = 1920, .height = 1080 };
+    const moved: state.Rect = .{ .x = 0, .y = 0, .width = 1920, .height = 1080 };
+    try std.testing.expect(sameRect(lhs, nearby));
+    try std.testing.expect(!sameRect(lhs, moved));
 }
 
 fn indexOfWindowId(ids: []const u64, needle: u64) ?usize {

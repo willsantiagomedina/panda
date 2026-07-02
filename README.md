@@ -27,6 +27,7 @@ Panda is for macOS users who want a lightweight, keyboard-driven window workflow
 | 🧭 Directional focus | Jump between tiled windows with `panda focus left/right/up/down`. |
 | 🔁 Window swapping | Reorder tiled windows from the keyboard with `panda swap ...`. |
 | 🖥️ Virtual workspaces | Use `panda desktop 1..9` as Panda-managed workspaces, independent of Mission Control. |
+| 🖥️ Multi-monitor tiling | Tile on the display containing the focused window and react to display changes. |
 | 🎀 Active borders | Toggle a simple active-window border overlay from the daemon. |
 | ⚙️ Lua-style config | Configure scope, layout, performance tuning, workspace chords, and global shortcuts. |
 | 📦 App + CLI packaging | Ship as a CLI tarball or as `Panda.app` inside a DMG. |
@@ -128,6 +129,7 @@ zig build install-cli -Doptimize=ReleaseFast
 | `panda uninstall-daemon` | Stop and remove the LaunchAgent. |
 | `panda daemon-status` | Check LaunchAgent and control socket health. |
 | `panda permissions` | Prompt/open Accessibility permission help. |
+| `panda doctor` | Check installation, signature, Accessibility, daemon, config, displays, and logs. |
 | `panda focus left\|right\|up\|down` | Focus the nearest tiled window in a direction. |
 | `panda swap left\|right\|up\|down` | Swap/reorder the focused window in a direction. |
 | `panda border on\|off\|toggle\|status` | Control active-window border overlays. |
@@ -147,6 +149,8 @@ zig build install-cli -Doptimize=ReleaseFast
 ## 🖥️ Virtual workspaces
 
 Panda's `desktop` commands are logical workspaces owned by Panda, not macOS Mission Control Spaces.
+
+Panda targets the display containing the focused window. Moving focus to another display switches the active tiling target without rearranging windows on the other display. Connecting, disconnecting, or resizing a display triggers a fresh layout, and a removed display falls back to the nearest available display.
 
 - `panda desktop 1` through `panda desktop 9` switch workspaces.
 - `panda desktop move-3` moves the focused window to workspace 3.
@@ -177,7 +181,7 @@ A complete starter config lives at `examples/config.lua`.
 
 ```lua
 return {
-  scope = "all-main-display", -- focused-app | all-main-display
+  scope = "all-main-display", -- focused-app | all windows on the focused display
   layout = "bsp",             -- bsp | grid | master-stack
   border = true,
 
@@ -353,6 +357,12 @@ Then enable Panda in:
 
 ```text
 System Settings → Privacy & Security → Accessibility
+```
+
+Run the complete diagnostic report with:
+
+```bash
+panda doctor
 ```
 
 ### Check logs

@@ -53,6 +53,9 @@ CGRect NSScreen_visibleFrame(void *screen);
 CGRect NSScreen_frame(void *screen);
 CGRect pandaMainDisplayVisibleFrame(void);
 CGRect pandaAllDisplaysBounds(void);
+CGRect pandaVisibleFrameForRect(CGRect rect);
+uint64_t pandaDisplayConfigurationSignature(void);
+int pandaDisplayCount(void);
 
 // Accessibility permission helpers
 bool pandaPromptForAccessibility(void);
