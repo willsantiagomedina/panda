@@ -333,6 +333,8 @@ pub const EventLoop = struct {
             return;
         }
 
+        self.syncFocusedWindowState(pid);
+
         const display_signature = ax.displayConfigurationSignature();
         if (display_signature != self.display_configuration_signature) {
             self.display_configuration_signature = display_signature;
@@ -349,8 +351,6 @@ pub const EventLoop = struct {
             try self.relayoutPid(pid);
             return;
         }
-
-        self.syncFocusedWindowState(pid);
 
         const snapshot_poll_interval: f64 = if (!self.notifications_enabled or
             self.options.scope == .all_apps_main_display)
@@ -698,11 +698,29 @@ pub const EventLoop = struct {
         return snapshotForSpace(&space);
     }
 
-    fn targetScreenForPid(self: *const EventLoop, pid: i32) state.Rect {
+    fn targetScreenForPid(self: *EventLoop, pid: i32) state.Rect {
+        if (self.restoring_workspace != null) {
+            if (self.workspaceRestoreScreen()) |screen| return screen;
+        }
         if (ax.focusedWindowFrame(pid) catch null) |frame| {
             return rectFromAx(ax.visibleFrameForRect(frame));
         }
         return self.fallbackTargetScreen();
+    }
+
+    fn workspaceRestoreScreen(self: *EventLoop) ?state.Rect {
+        for (self.workspace_manager.activeWindowIds()) |window_id| {
+            const managed = self.workspace_manager.windows.get(window_id) orelse continue;
+            if (managed.hidden_geometry) |geometry| {
+                return rectFromAx(ax.visibleFrameForRect(.{
+                    .x = geometry.frame.x,
+                    .y = geometry.frame.y,
+                    .width = geometry.frame.width,
+                    .height = geometry.frame.height,
+                }));
+            }
+        }
+        return null;
     }
 
     fn fallbackTargetScreen(self: *const EventLoop) state.Rect {
@@ -982,10 +1000,12 @@ pub const EventLoop = struct {
     }
 
     fn hideWindowInfo(self: *EventLoop, window_id: u64, info: state.WindowInfo) void {
-        const reference_screen = if (self.current_screen.width > 0 and self.current_screen.height > 0)
-            self.current_screen
-        else
-            self.hideBounds();
+        const reference_screen = rectFromAx(ax.visibleFrameForRect(.{
+            .x = info.frame.x,
+            .y = info.frame.y,
+            .width = info.frame.width,
+            .height = info.frame.height,
+        }));
         const proportional_x = if (reference_screen.width > 0) (info.frame.x - reference_screen.x) / reference_screen.width else 0;
         const proportional_y = if (reference_screen.height > 0) (info.frame.y - reference_screen.y) / reference_screen.height else 0;
         const geometry: workspaces.HiddenGeometry = .{ .frame = info.frame, .screen = reference_screen, .proportional_x = @max(0, @min(1, proportional_x)), .proportional_y = @max(0, @min(1, proportional_y)) };
