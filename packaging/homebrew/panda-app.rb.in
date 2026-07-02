@@ -10,7 +10,7 @@ cask "panda-app" do
   desc "Tiling window manager written in Zig"
   homepage "https://givepanda.tech/"
 
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
   depends_on arch: :arm64
 
   app "Panda.app"

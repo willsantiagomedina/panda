@@ -8,7 +8,9 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  # Release artifacts are not byte-for-byte reproducible, so only one release
+  # may publish assets and update the shared Homebrew tap at a time.
+  group: panda-release-publishing
   cancel-in-progress: false
 
 jobs:
@@ -25,6 +27,8 @@ jobs:
           fetch-depth: 0
 
       - name: Validate release tag and commit
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -38,6 +42,10 @@ jobs:
             echo "release tag must point to a commit reachable from main" >&2
             exit 1
           }
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists; refusing to replace its assets" >&2
+            exit 1
+          fi
           echo "PANDA_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           echo "PANDA_GIT_SHA=$release_commit" >> "$GITHUB_ENV"
 
@@ -113,6 +121,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest
 
+      - name: Verify published release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PUBLISHED_DIR="$RUNNER_TEMP/panda-published-release"
+          mkdir -p "$PUBLISHED_DIR"
+          gh release download "$GITHUB_REF_NAME" --dir "$PUBLISHED_DIR"
+          for asset in \
+            panda-macos-arm64.dmg \
+            panda-macos-arm64.dmg.sha256 \
+            panda-macos-arm64.tar.gz \
+            panda-macos-arm64.tar.gz.sha256 \
+            panda-release.json; do
+            cmp "dist/$asset" "$PUBLISHED_DIR/$asset"
+          done
+          echo "PANDA_PUBLISHED_DIR=$PUBLISHED_DIR" >> "$GITHUB_ENV"
+
       - name: Check out Homebrew tap
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -123,8 +149,8 @@ jobs:
       - name: Update Homebrew cask and formula
         run: |
           set -euo pipefail
-          DMG_SHA="$(shasum -a 256 dist/panda-macos-arm64.dmg | awk '{print $1}')"
-          ARCHIVE_SHA="$(shasum -a 256 dist/panda-macos-arm64.tar.gz | awk '{print $1}')"
+          DMG_SHA="$(shasum -a 256 "$PANDA_PUBLISHED_DIR/panda-macos-arm64.dmg" | awk '{print $1}')"
+          ARCHIVE_SHA="$(shasum -a 256 "$PANDA_PUBLISHED_DIR/panda-macos-arm64.tar.gz" | awk '{print $1}')"
           RELEASE_ROOT="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
           scripts/render-homebrew-cask.sh \
             "$PANDA_VERSION" \

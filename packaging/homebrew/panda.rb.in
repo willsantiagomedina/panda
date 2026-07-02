@@ -10,7 +10,7 @@ class Panda < Formula
   sha256 "__PANDA_SHA256__"
 
   depends_on arch: :arm64
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
 
   def install
     bin.install "panda"
