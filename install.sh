@@ -13,6 +13,14 @@ say() { printf 'ʕ•ᴥ•ʔ  %s\n' "$*"; }
 fail() { printf 'panda install: %s\n' "$*" >&2; exit 1; }
 need_cmd() { command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"; }
 
+start_panda() {
+  if [[ "$PANDA_SKIP_LAUNCH" == "1" ]]; then return; fi
+  local cli="$PANDA_APP_PATH/Contents/MacOS/panda-cli"
+  [[ -x "$cli" ]] || fail "installed Panda CLI is missing"
+  "$cli" install-daemon || fail "Panda was installed, but its daemon could not be started"
+  open "$PANDA_APP_PATH" >/dev/null 2>&1 || true
+}
+
 require_supported_mac() {
   [[ "$(uname -s)" == "Darwin" ]] || fail "Panda currently supports only macOS"
   [[ "$(uname -m)" == "arm64" ]] || fail "this Panda release supports Apple Silicon only"
@@ -38,7 +46,7 @@ install_with_homebrew() {
     brew install --cask "$PANDA_CASK"
   fi
   xattr -dr com.apple.quarantine "$PANDA_APP_PATH" >/dev/null 2>&1 || true
-  if [[ "$PANDA_SKIP_LAUNCH" != "1" ]]; then open "$PANDA_APP_PATH"; fi
+  start_panda
   say "Panda is installed. Grant Accessibility once when macOS prompts."
 }
 
@@ -131,11 +139,12 @@ install_direct() {
     [[ -e "$backup" ]] && install_cmd mv "$backup" "$PANDA_APP_PATH"
     fail "the new app could not start; the previous app was restored"
   }
-  if [[ "$PANDA_SKIP_LAUNCH" != "1" ]] && ! open "$PANDA_APP_PATH"; then
+  if [[ "$PANDA_SKIP_LAUNCH" != "1" ]] && ! "$PANDA_APP_PATH/Contents/MacOS/panda-cli" install-daemon; then
     install_cmd rm -rf "$PANDA_APP_PATH"
     [[ -e "$backup" ]] && install_cmd mv "$backup" "$PANDA_APP_PATH"
-    fail "the new app did not launch; the previous app was restored"
+    fail "the new daemon did not start; the previous app was restored"
   fi
+  if [[ "$PANDA_SKIP_LAUNCH" != "1" ]]; then open "$PANDA_APP_PATH" >/dev/null 2>&1 || true; fi
   install_cmd rm -rf "$backup"
   say "Panda $version is installed. Grant Accessibility once when macOS prompts."
   cleanup
