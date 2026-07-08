@@ -71,7 +71,19 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 cp "$BIN_PATH" "$MACOS_DIR/$APP_NAME"
 cp "$BIN_PATH" "$MACOS_DIR/panda-cli"
-chmod +x "$MACOS_DIR/$APP_NAME" "$MACOS_DIR/panda-cli"
+cp "$ICON_PNG" "$RESOURCES_DIR/PandaMascot.png"
+cp "$ROOT/app/PandaChangelog.json" "$RESOURCES_DIR/PandaChangelog.json"
+xcrun swiftc "$ROOT/app/PandaUI.swift" "$ROOT/app/ConfigStore.swift" \
+  -parse-as-library \
+  -swift-version 5 \
+  -enable-bare-slash-regex \
+  -target "arm64-apple-macosx$PANDA_MACOS_VERSION" \
+  -framework AppKit \
+  -framework SwiftUI \
+  -framework ApplicationServices \
+  -framework ServiceManagement \
+  -o "$MACOS_DIR/PandaUI"
+chmod +x "$MACOS_DIR/$APP_NAME" "$MACOS_DIR/panda-cli" "$MACOS_DIR/PandaUI"
 
 cat > "$CONTENTS_DIR/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -111,6 +123,7 @@ iconutil -c icns "$iconset_dir" -o "$RESOURCES_DIR/PandaLogo.icns"
 
 codesign --force --options runtime --timestamp=none --sign "$PANDA_CODESIGN_IDENTITY" "$MACOS_DIR/Panda"
 codesign --force --options runtime --timestamp=none --sign "$PANDA_CODESIGN_IDENTITY" "$MACOS_DIR/panda-cli"
+codesign --force --options runtime --timestamp=none --sign "$PANDA_CODESIGN_IDENTITY" "$MACOS_DIR/PandaUI"
 codesign --force --deep --options runtime --timestamp=none --sign "$PANDA_CODESIGN_IDENTITY" "$APP_DIR"
 codesign --verify --deep --strict "$APP_DIR"
 

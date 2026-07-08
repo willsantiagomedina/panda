@@ -32,3 +32,14 @@ jobs:
 
       - name: Compile Panda
         run: zig build check --summary all
+
+      - name: Compile native UI
+        run: >-
+          xcrun swiftc app/PandaUI.swift app/ConfigStore.swift
+          -parse-as-library -swift-version 5 -enable-bare-slash-regex
+          -target arm64-apple-macosx13.0
+          -framework AppKit -framework SwiftUI -framework ApplicationServices
+          -framework ServiceManagement -o "$RUNNER_TEMP/PandaUI"
+
+      - name: Test native UI config editing
+        run: scripts/test-ui.sh

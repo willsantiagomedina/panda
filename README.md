@@ -34,6 +34,8 @@ Panda is for macOS users who want a lightweight, keyboard-driven window workflow
 
 Panda is intentionally small: the core is Zig, the macOS bridge is Objective-C, and the runtime control path is a local per-user Unix socket.
 
+The app bundle also includes a native macOS menu bar and Settings experience. It edits the same Lua-style config used by the CLI, preserves comments and unknown fields, and refuses to rewrite dynamic Lua it cannot safely understand.
+
 ---
 
 ## 🚀 Install
@@ -128,6 +130,8 @@ zig build install-cli -Doptimize=ReleaseFast
 | `panda install-daemon` | Install and start Panda as a per-user LaunchAgent. |
 | `panda uninstall-daemon` | Stop and remove the LaunchAgent. |
 | `panda daemon-status` | Check LaunchAgent and control socket health. |
+| `panda reload` | Reload config in place without resetting virtual workspace state. |
+| `panda restart` | Restart the Panda daemon. |
 | `panda permissions` | Prompt/open Accessibility permission help. |
 | `panda doctor` | Check installation, signature, Accessibility, daemon, config, displays, and logs. |
 | `panda focus left\|right\|up\|down` | Focus the nearest tiled window in a direction. |
@@ -178,6 +182,8 @@ Panda reads configuration from:
 2. `~/.config/panda/config.lua`
 
 A complete starter config lives at `examples/config.lua`.
+
+Open Panda from Applications and choose **Open Settings…** from the menu bar to configure keybinds, layout, window scope, and borders visually. Terminal edits remain supported; Settings watches the file and reloads external changes.
 
 ```lua
 return {

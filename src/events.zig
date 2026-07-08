@@ -1,7 +1,9 @@
 const std = @import("std");
 const ax = @import("ax.zig");
+const config = @import("config.zig");
 const hotkeys = @import("hotkeys.zig");
 const layout = @import("layout.zig");
+const runtime_options = @import("runtime_options.zig");
 const state = @import("state.zig");
 const workspaces = @import("workspaces.zig");
 
@@ -10,18 +12,7 @@ const log = std.log.scoped(.events);
 extern "c" fn socket(domain: c_int, socket_type: c_int, protocol: c_int) c_int;
 extern "c" fn close(fd: std.c.fd_t) c_int;
 
-pub const PerformanceOptions = struct {
-    focus_poll_interval_seconds: f64 = 0.08,
-    fallback_snapshot_poll_interval_seconds: f64 = 0.75,
-    observer_backstop_snapshot_poll_interval_seconds: f64 = 0.20,
-    control_poll_interval_seconds: f64 = 0.02,
-    immediate_relayout_delay_seconds: f64 = 0.01,
-    burst_relayout_delay_seconds: f64 = 0.04,
-    burst_window_seconds: f64 = 0.12,
-    min_relayout_interval_seconds: f64 = 0.03,
-    self_event_suppression_window_seconds: f64 = 0.20,
-    swap_double_tap_window_seconds: f64 = 0.35,
-};
+pub const PerformanceOptions = runtime_options.PerformanceOptions;
 
 const max_command_length = 128;
 const max_hotkey_events_per_tick = 32;
@@ -172,6 +163,8 @@ pub const EventLoop = struct {
     suppress_hotkey_action: ?hotkeys.HotkeyAction = null,
     suppress_hotkeys_until: f64 = 0,
     display_configuration_signature: u64 = 0,
+    reloaded_config: ?config.LoadedConfig = null,
+    hotkeys_paused_until: f64 = 0,
 
     pub const Options = struct {
         scope: state.SpaceState.WindowScope = .focused_app,
@@ -215,6 +208,7 @@ pub const EventLoop = struct {
 
         self.teardownObserver();
         self.teardownControlSocket();
+        if (self.reloaded_config) |*loaded| loaded.deinit(self.allocator);
     }
 
     pub fn run(self: *EventLoop) !void {
@@ -804,6 +798,7 @@ pub const EventLoop = struct {
     }
 
     fn handleHotkeyTrigger(self: *EventLoop, hotkey_id: u32) void {
+        if (ax.c.CFAbsoluteTimeGetCurrent() <= self.hotkeys_paused_until) return;
         for (self.options.hotkeys) |binding| {
             if (binding.id != hotkey_id) continue;
 
@@ -1125,7 +1120,50 @@ pub const EventLoop = struct {
             return CommandError.InvalidCommand;
         }
 
+        if (std.mem.eql(u8, verb, "reload")) {
+            if (parts.next() != null) return CommandError.InvalidCommand;
+            try self.reloadConfiguration();
+            return "config: reloaded\n";
+        }
+
+        if (std.mem.eql(u8, verb, "hotkeys")) {
+            const action = parts.next() orelse return CommandError.InvalidCommand;
+            if (parts.next() != null) return CommandError.InvalidCommand;
+            if (std.mem.eql(u8, action, "pause")) {
+                self.hotkeys_paused_until = ax.c.CFAbsoluteTimeGetCurrent() + 30.0;
+                return "hotkeys: paused\n";
+            }
+            if (std.mem.eql(u8, action, "resume")) {
+                self.hotkeys_paused_until = 0;
+                return "hotkeys: active\n";
+            }
+            return CommandError.InvalidCommand;
+        }
+
         return CommandError.InvalidCommand;
+    }
+
+    fn reloadConfiguration(self: *EventLoop) !void {
+        var loaded = try config.load(self.allocator);
+        errdefer loaded.deinit(self.allocator);
+
+        ax.c.pandaClearHotkeys();
+        if (self.reloaded_config) |*previous| previous.deinit(self.allocator);
+        self.reloaded_config = loaded;
+        const settings = &self.reloaded_config.?.settings;
+        self.options.scope = settings.scope orelse .all_apps_main_display;
+        self.options.layout_options.mode = settings.layout_mode orelse .bsp;
+        self.options.border_enabled = settings.border_enabled orelse true;
+        self.options.performance = settings.performance;
+        self.options.hotkeys = settings.hotkeys;
+        self.options.desktop = settings.desktop;
+        self.border_enabled = self.options.border_enabled;
+        ax.c.pandaSetBordersVisible(self.border_enabled);
+        self.installHotkeys();
+        self.last_snapshot = .{};
+        self.last_snapshot_poll_at = 0;
+        self.force_full_workspace_scan = true;
+        self.scheduleRelayout(0);
     }
 
     fn desktopStatus(self: *EventLoop) []const u8 {
@@ -1626,8 +1664,8 @@ test "hidden workspace frame parks at the bottom-right corner" {
     const hidden = hiddenWindowFrame(screen, frame);
     try std.testing.expectEqual(frame.width, hidden.width);
     try std.testing.expectEqual(frame.height, hidden.height);
-    try std.testing.expectEqual(screen.x + screen.width - 1, hidden.x);
-    try std.testing.expectEqual(screen.y + screen.height - 1, hidden.y);
+    try std.testing.expectEqual(screen.x + screen.width + hidden_window_margin, hidden.x);
+    try std.testing.expectEqual(screen.y + screen.height + hidden_window_margin, hidden.y);
 }
 
 test "hidden workspace frame handles negative multi-display origins" {
@@ -1637,8 +1675,8 @@ test "hidden workspace frame handles negative multi-display origins" {
     const hidden = hiddenWindowFrame(screen, frame);
     try std.testing.expectEqual(frame.width, hidden.width);
     try std.testing.expectEqual(frame.height, hidden.height);
-    try std.testing.expectEqual(screen.x + screen.width - 1, hidden.x);
-    try std.testing.expectEqual(screen.y + screen.height - 1, hidden.y);
+    try std.testing.expectEqual(screen.x + screen.width + hidden_window_margin, hidden.x);
+    try std.testing.expectEqual(screen.y + screen.height + hidden_window_margin, hidden.y);
 }
 
 test "hidden workspace frame preserves oversized windows" {
@@ -1648,8 +1686,8 @@ test "hidden workspace frame preserves oversized windows" {
     const hidden = hiddenWindowFrame(screen, frame);
     try std.testing.expectEqual(frame.width, hidden.width);
     try std.testing.expectEqual(frame.height, hidden.height);
-    try std.testing.expectEqual(screen.x + screen.width - 1, hidden.x);
-    try std.testing.expectEqual(screen.y + screen.height - 1, hidden.y);
+    try std.testing.expectEqual(screen.x + screen.width + hidden_window_margin, hidden.x);
+    try std.testing.expectEqual(screen.y + screen.height + hidden_window_margin, hidden.y);
 }
 
 test "debug windows command reports workspace state without side effects" {
@@ -1666,12 +1704,14 @@ fn hiddenWindowFrame(screen: state.Rect, frame: state.Rect) state.Rect {
     const width = @max(1, frame.width);
     const height = @max(1, frame.height);
     return .{
-        .x = screen.x + screen.width - 1,
-        .y = screen.y + screen.height - 1,
+        .x = screen.x + screen.width + hidden_window_margin,
+        .y = screen.y + screen.height + hidden_window_margin,
         .width = width,
         .height = height,
     };
 }
+
+const hidden_window_margin: f64 = 32;
 
 fn rectCenter(rect: state.Rect) state.Rect {
     return .{

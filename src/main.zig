@@ -22,6 +22,7 @@ pub fn main() !void {
     _ = args.next();
     const maybe_command = args.next();
     if (maybe_command == null and try isRunningFromAppBundle(allocator)) {
+        try launchAppUI(allocator);
         try launchAppDaemon(allocator);
         return;
     }
@@ -56,6 +57,21 @@ pub fn main() !void {
         },
         else => return err,
     };
+}
+
+fn launchAppUI(allocator: std.mem.Allocator) !void {
+    const exe_path = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(exe_path);
+    const app_root = appBundleRoot(exe_path) orelse return;
+    const ui_path = try std.fs.path.join(allocator, &.{ app_root, "Contents", "MacOS", "PandaUI" });
+    defer allocator.free(ui_path);
+    if (!isExecutableFile(ui_path)) return;
+
+    var child = std.process.Child.init(&.{ui_path}, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    try child.spawn();
 }
 
 fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) !void {
@@ -98,6 +114,26 @@ fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) 
         if (args.next() != null) return error.InvalidArguments;
         if (!std.mem.eql(u8, subject, "windows")) return error.InvalidArguments;
         try sendDaemonCommand(allocator, try std.fmt.allocPrint(allocator, "debug {s}", .{subject}));
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "reload")) {
+        if (args.next() != null) return error.InvalidArguments;
+        try sendDaemonCommand(allocator, try allocator.dupe(u8, "reload"));
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "hotkeys")) {
+        const action = args.next() orelse return error.InvalidArguments;
+        if (args.next() != null) return error.InvalidArguments;
+        if (!std.mem.eql(u8, action, "pause") and !std.mem.eql(u8, action, "resume")) return error.InvalidArguments;
+        try sendDaemonCommand(allocator, try std.fmt.allocPrint(allocator, "hotkeys {s}", .{action}));
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "restart")) {
+        if (args.next() != null) return error.InvalidArguments;
+        try installDaemon(allocator);
         return;
     }
 
@@ -568,6 +604,8 @@ fn installDaemon(allocator: std.mem.Allocator) !void {
     defer allocator.free(service);
 
     _ = runProcess(allocator, &.{ "launchctl", "bootout", domain, plist_path }) catch {};
+    _ = runProcess(allocator, &.{ "/usr/bin/pkill", "-f", "/Applications/Panda.app/Contents/MacOS/Panda daemon" }) catch {};
+    _ = runProcess(allocator, &.{ "/usr/bin/pkill", "-f", "/Applications/Panda.app/Contents/MacOS/panda-cli daemon" }) catch {};
     try expectProcess(allocator, &.{ "launchctl", "bootstrap", domain, plist_path }, "load LaunchAgent");
     try expectProcess(allocator, &.{ "launchctl", "enable", service }, "enable LaunchAgent");
     try expectProcess(allocator, &.{ "launchctl", "kickstart", "-k", service }, "start daemon");
@@ -586,6 +624,8 @@ fn uninstallDaemon(allocator: std.mem.Allocator) !void {
     defer allocator.free(domain);
 
     _ = runProcess(allocator, &.{ "launchctl", "bootout", domain, plist_path }) catch {};
+    _ = runProcess(allocator, &.{ "/usr/bin/pkill", "-f", "/Applications/Panda.app/Contents/MacOS/Panda daemon" }) catch {};
+    _ = runProcess(allocator, &.{ "/usr/bin/pkill", "-f", "/Applications/Panda.app/Contents/MacOS/panda-cli daemon" }) catch {};
     std.fs.deleteFileAbsolute(plist_path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
@@ -909,6 +949,9 @@ fn printUsage() !void {
         \\  panda install-daemon
         \\  panda uninstall-daemon
         \\  panda daemon-status
+        \\  panda reload
+        \\  panda restart
+        \\  panda hotkeys pause|resume
         \\  panda update [--force]
         \\  panda permissions
         \\  panda doctor

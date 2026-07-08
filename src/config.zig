@@ -1,7 +1,7 @@
 const std = @import("std");
-const events = @import("events.zig");
 const hotkeys = @import("hotkeys.zig");
 const layout = @import("layout.zig");
+const runtime_options = @import("runtime_options.zig");
 const state = @import("state.zig");
 
 pub const max_config_bytes: usize = 256 * 1024;
@@ -10,7 +10,7 @@ pub const Settings = struct {
     scope: ?state.SpaceState.WindowScope = null,
     layout_mode: ?layout.LayoutMode = null,
     border_enabled: ?bool = null,
-    performance: events.PerformanceOptions = .{},
+    performance: runtime_options.PerformanceOptions = .{},
     desktop: hotkeys.DesktopBindings = .{},
     hotkeys: []hotkeys.HotkeyBinding = &.{},
 
