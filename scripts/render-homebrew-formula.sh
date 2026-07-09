@@ -10,9 +10,20 @@ fi
 VERSION="$1"
 URL="$2"
 SHA256="$3"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TEMPLATE="$ROOT/packaging/homebrew/panda.rb.in"
 
-sed \
-  -e "s|__PANDA_VERSION__|$VERSION|g" \
-  -e "s|__PANDA_URL__|$URL|g" \
-  -e "s|__PANDA_SHA256__|$SHA256|g" \
-  "$(cd "$(dirname "$0")/.." && pwd)/packaging/homebrew/panda.rb.in"
+python3 - "$TEMPLATE" "$VERSION" "$URL" "$SHA256" <<'PY'
+import sys
+from pathlib import Path
+
+template_path, version, url, sha256 = sys.argv[1:]
+content = Path(template_path).read_text()
+for placeholder, value in {
+    "__PANDA_VERSION__": version,
+    "__PANDA_URL__": url,
+    "__PANDA_SHA256__": sha256,
+}.items():
+    content = content.replace(placeholder, value)
+print(content, end="")
+PY
