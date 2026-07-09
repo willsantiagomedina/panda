@@ -26,8 +26,10 @@ hdiutil verify "$DIST_DIR/$DMG_NAME" >/dev/null
 mount_dir="$(mktemp -d)"
 extract_dir="$(mktemp -d)"
 cleanup() {
+  exit_code=$?
   hdiutil detach "$mount_dir" >/dev/null 2>&1 || true
   rm -rf "$mount_dir" "$extract_dir"
+  exit "$exit_code"
 }
 trap cleanup EXIT
 hdiutil attach "$DIST_DIR/$DMG_NAME" -mountpoint "$mount_dir" -nobrowse -quiet
@@ -43,6 +45,7 @@ app="$mount_dir/Panda.app"
 /usr/bin/python3 -m json.tool "$app/Contents/Resources/PandaChangelog.json" >/dev/null || fail "Panda changelog is invalid JSON"
 [[ "$(plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist")" == "$PANDA_VERSION" ]] || fail "bundle short version mismatch"
 [[ "$(plutil -extract CFBundleVersion raw -o - "$app/Contents/Info.plist")" == "$PANDA_VERSION" ]] || fail "bundle version mismatch"
+[[ "$(plutil -extract CFBundleExecutable raw -o - "$app/Contents/Info.plist")" == "PandaUI" ]] || fail "bundle must launch PandaUI"
 [[ "$(plutil -extract LSMinimumSystemVersion raw -o - "$app/Contents/Info.plist")" == "13.0" ]] || fail "minimum macOS mismatch"
 codesign --verify --deep --strict --verbose=2 "$app"
 codesign --verify --strict "$app/Contents/MacOS/Panda"

@@ -32,6 +32,7 @@ private final class PandaModel: ObservableObject {
     @Published var daemonStatus = "Checking Panda"
     @Published var accessibilityGranted = AXIsProcessTrusted()
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @Published var menuBarAnimationEnabled = UserDefaults.standard.object(forKey: "menuBarAnimationEnabled") as? Bool ?? true
     let configStore = PandaConfigStore()
 
     init() { refresh() }
@@ -54,6 +55,22 @@ private final class PandaModel: ObservableObject {
         }
     }
 
+    func ensureDaemonRunning() {
+        guard Bundle.main.bundleURL.path.hasPrefix("/Applications/") else { return }
+
+        Task { [weak self] in
+            let isRunning = await Task.detached {
+                Self.runCLI(["daemon-status"]).succeeded
+            }.value
+            if !isRunning {
+                _ = await Task.detached {
+                    Self.runCLI(["install-daemon"])
+                }.value
+            }
+            self?.refresh()
+        }
+    }
+
     func openAccessibility() {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
@@ -71,6 +88,11 @@ private final class PandaModel: ObservableObject {
             launchAtLogin = SMAppService.mainApp.status == .enabled
             NSAlert(error: error).runModal()
         }
+    }
+
+    func setMenuBarAnimationEnabled(_ enabled: Bool) {
+        menuBarAnimationEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "menuBarAnimationEnabled")
     }
 
     func reloadConfig() {
@@ -226,7 +248,8 @@ private struct GeneralView: View {
                 LabeledContent("Status", value: model.daemonStatus)
                 LabeledContent("Accessibility", value: model.accessibilityGranted ? "Granted" : "Required")
                 if !model.accessibilityGranted { Button("Open Accessibility Settings", action: model.openAccessibility) }
-                Toggle("Show Panda in the menu bar at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+                Toggle("Launch Panda at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+                Toggle("Animate Panda in the menu bar", isOn: Binding(get: { model.menuBarAnimationEnabled }, set: { model.setMenuBarAnimationEnabled($0) }))
             }
             Section("Configuration") {
                 LabeledContent("Status", value: model.configStatus)
@@ -424,6 +447,33 @@ private struct PlaceholderSettings: View {
     }
 }
 
+private struct AnimatedPandaMascot: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var bobbing = false
+
+    var body: some View {
+        Group {
+            if let image = NSImage(named: "PandaMascot") {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                Image(systemName: "pawprint.fill")
+                    .font(.system(size: 64))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 104, height: 104)
+        .scaleEffect(reduceMotion ? 1 : (bobbing ? 1.04 : 0.96))
+        .offset(y: reduceMotion ? 0 : (bobbing ? -5 : 5))
+        .animation(.easeInOut(duration: 1.15).repeatForever(autoreverses: true), value: bobbing)
+        .onAppear {
+            guard !reduceMotion else { return }
+            bobbing = true
+        }
+    }
+}
+
 private struct OnboardingView: View {
     let isUpdate: Bool
     let version: String
@@ -444,11 +494,7 @@ private struct OnboardingView: View {
 
     var body: some View {
         VStack(spacing: 22) {
-            if let image = NSImage(named: "PandaMascot") {
-                Image(nsImage: image).resizable().scaledToFit().frame(width: 104, height: 104)
-            } else {
-                Image(systemName: "pawprint.fill").font(.system(size: 64)).foregroundStyle(.secondary)
-            }
+            AnimatedPandaMascot()
             if isUpdate {
                 Text("Welcome back").font(.largeTitle.bold())
                 Text("Panda \(version) is ready. Your configuration and terminal workflow are unchanged.")
@@ -532,16 +578,37 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var onboardingWindow: NSWindow?
     private var statusObservation: AnyCancellable?
+    private var statusAnimationObservation: AnyCancellable?
+    private var statusAnimationTimer: Timer?
+    private var statusAnimationPhase = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.image = Self.pandaStatusImage()
+        statusItem.button?.image = Self.pandaStatusImage(waving: false)
         rebuildMenu()
         statusObservation = model.$daemonStatus.combineLatest(model.$accessibilityGranted).sink { [weak self] status, permission in
             self?.statusMenuItem.title = permission ? status : "Accessibility permission required"
             self?.statusItem.button?.contentTintColor = permission ? nil : .systemOrange
         }
-        showOnboardingIfNeeded()
+        statusAnimationObservation = model.$menuBarAnimationEnabled.sink { [weak self] enabled in
+            self?.updateStatusAnimation(enabled: enabled)
+            self?.rebuildMenu()
+        }
+        model.ensureDaemonRunning()
+        if !showOnboardingIfNeeded() {
+            showSettings(route: .general)
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        statusAnimationTimer?.invalidate()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if onboardingWindow?.isVisible != true {
+            showSettings(route: .general)
+        }
+        return true
     }
 
     private func rebuildMenu() {
@@ -556,19 +623,45 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Reload Config", action: #selector(reloadConfig), keyEquivalent: "")
         menu.addItem(withTitle: "Restart Panda", action: #selector(restartPanda), keyEquivalent: "")
         menu.addItem(.separator())
+        menu.addItem(withTitle: "Show Welcome…", action: #selector(showWelcome), keyEquivalent: "")
+        let animationItem = menu.addItem(withTitle: "Animate Panda", action: #selector(toggleStatusAnimation), keyEquivalent: "")
+        animationItem.state = model.menuBarAnimationEnabled ? .on : .off
+        menu.addItem(.separator())
         menu.addItem(withTitle: "About Panda", action: #selector(showAbout), keyEquivalent: "")
         menu.addItem(withTitle: "Quit Panda", action: #selector(quitPanda), keyEquivalent: "q")
         for item in menu.items { item.target = self }
         statusItem.menu = menu
     }
 
-    private static func pandaStatusImage() -> NSImage {
+    private func updateStatusAnimation(enabled: Bool) {
+        statusAnimationTimer?.invalidate()
+        statusAnimationTimer = nil
+        statusAnimationPhase = false
+        statusItem.button?.image = Self.pandaStatusImage(waving: false)
+
+        guard enabled, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        statusAnimationTimer = Timer.scheduledTimer(
+            timeInterval: 1.15,
+            target: self,
+            selector: #selector(advanceStatusAnimation),
+            userInfo: nil,
+            repeats: true
+        )
+    }
+
+    @objc private func advanceStatusAnimation() {
+        statusAnimationPhase.toggle()
+        statusItem.button?.image = Self.pandaStatusImage(waving: statusAnimationPhase)
+    }
+
+    private static func pandaStatusImage(waving: Bool) -> NSImage {
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
             NSColor.black.setStroke()
             NSColor.black.setFill()
 
-            NSBezierPath(ovalIn: NSRect(x: 1.4, y: 10.7, width: 5.2, height: 5.2)).fill()
-            NSBezierPath(ovalIn: NSRect(x: 11.4, y: 10.7, width: 5.2, height: 5.2)).fill()
+            let earLift: CGFloat = waving ? 0.9 : 0
+            NSBezierPath(ovalIn: NSRect(x: 1.4, y: 10.7 + earLift, width: 5.2, height: 5.2)).fill()
+            NSBezierPath(ovalIn: NSRect(x: 11.4, y: 10.7 + earLift, width: 5.2, height: 5.2)).fill()
 
             let face = NSBezierPath(ovalIn: NSRect(x: 2.5, y: 2.2, width: 13, height: 12.8))
             face.lineWidth = 1.35
@@ -591,6 +684,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openKeybinds() { showSettings(route: .keybinds) }
     @objc private func reloadConfig() { model.reloadConfig() }
     @objc private func restartPanda() { model.restart() }
+    @objc private func showWelcome() { showOnboarding(isUpdate: false) }
+    @objc private func toggleStatusAnimation() { model.setMenuBarAnimationEnabled(!model.menuBarAnimationEnabled) }
     @objc private func showAbout() { NSApp.orderFrontStandardAboutPanel(nil); NSApp.activate(ignoringOtherApps: true) }
     @objc private func quitPanda() {
         if Bundle.main.bundleURL.path.hasPrefix("/Applications/") { model.stop() }
@@ -613,13 +708,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
-    private func showOnboardingIfNeeded() {
+    @discardableResult
+    private func showOnboardingIfNeeded() -> Bool {
         let defaults = UserDefaults.standard
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
         let completed = defaults.bool(forKey: "hasCompletedOnboarding")
         let lastVersion = defaults.string(forKey: "lastSeenVersion")
-        guard !completed || (lastVersion != nil && lastVersion != version) else { return }
-        let isUpdate = completed || FileManager.default.fileExists(atPath: model.configStore.path)
+        guard !completed || (lastVersion != nil && lastVersion != version) else { return false }
+        showOnboarding(isUpdate: completed)
+        return true
+    }
+
+    private func showOnboarding(isUpdate: Bool) {
+        let defaults = UserDefaults.standard
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
         let view = OnboardingView(
             isUpdate: isUpdate,
             version: version,
@@ -627,10 +729,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             highlights: releaseHighlights(for: version),
             openPermission: { [weak self] in self?.model.openAccessibility() },
             finish: { [weak self] in
+                guard let self else { return }
                 defaults.set(true, forKey: "hasCompletedOnboarding")
                 defaults.set(version, forKey: "lastSeenVersion")
-                self?.onboardingWindow?.close()
-                self?.showSettings(route: .keybinds)
+                self.onboardingWindow?.close()
+                self.onboardingWindow = nil
+                self.showSettings(route: .general)
             }
         )
         let window = NSWindow(contentViewController: NSHostingController(rootView: view))

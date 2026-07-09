@@ -350,6 +350,10 @@ pub fn setWindowPosition(window: NativeWindowRef, x: f64, y: f64) Error!void {
     try axCall(AXUIElementSetAttributeValue(window, position_attribute, position_value));
 }
 
+pub fn windowFrame(window: NativeWindowRef) Error!Rect {
+    return copyWindowFrame(window);
+}
+
 pub fn setWindowSize(window: NativeWindowRef, width: f64, height: f64) Error!void {
     var size = c.CGSize{ .width = width, .height = height };
     const size_attribute = try makeCfString("AXSize");

@@ -22,7 +22,6 @@ pub fn main() !void {
     _ = args.next();
     const maybe_command = args.next();
     if (maybe_command == null and try isRunningFromAppBundle(allocator)) {
-        try launchAppUI(allocator);
         try launchAppDaemon(allocator);
         return;
     }
@@ -57,21 +56,6 @@ pub fn main() !void {
         },
         else => return err,
     };
-}
-
-fn launchAppUI(allocator: std.mem.Allocator) !void {
-    const exe_path = try std.fs.selfExePathAlloc(allocator);
-    defer allocator.free(exe_path);
-    const app_root = appBundleRoot(exe_path) orelse return;
-    const ui_path = try std.fs.path.join(allocator, &.{ app_root, "Contents", "MacOS", "PandaUI" });
-    defer allocator.free(ui_path);
-    if (!isExecutableFile(ui_path)) return;
-
-    var child = std.process.Child.init(&.{ui_path}, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
 }
 
 fn runCommand(command: []const u8, args: anytype, allocator: std.mem.Allocator) !void {

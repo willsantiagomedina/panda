@@ -1,4 +1,12 @@
 {
+  "0.1.5": {
+    "title": "Panda returns to the menu bar",
+    "highlights": [
+      "Panda now opens its native menu-bar app and Settings reliably after installation",
+      "A gentle, optional Panda animation is available from Settings and the menu bar",
+      "Inactive workspace windows are verified fully off-screen before they are hidden"
+    ]
+  },
   "0.1.3": {
     "title": "A friendlier Panda",
     "highlights": [

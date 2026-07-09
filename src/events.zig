@@ -486,6 +486,7 @@ pub const EventLoop = struct {
 
         try self.reconcileWorkspaces(&space);
         try self.filterToActiveWorkspace(&space);
+        self.restoreMinimizedWindows(&space);
 
         if (space.window_order.items.len == 0) {
             self.last_snapshot = .{};
@@ -1004,9 +1005,26 @@ pub const EventLoop = struct {
         const proportional_x = if (reference_screen.width > 0) (info.frame.x - reference_screen.x) / reference_screen.width else 0;
         const proportional_y = if (reference_screen.height > 0) (info.frame.y - reference_screen.y) / reference_screen.height else 0;
         const geometry: workspaces.HiddenGeometry = .{ .frame = info.frame, .screen = reference_screen, .proportional_x = @max(0, @min(1, proportional_x)), .proportional_y = @max(0, @min(1, proportional_y)) };
-        const hidden_frame = hiddenWindowFrame(self.hideBounds(), info.frame);
-        ax.setWindowPosition(info.element, hidden_frame.x, hidden_frame.y) catch return;
-        self.workspace_manager.setHidden(window_id, true, geometry);
+        const display_bounds = self.hideBounds();
+
+        for (hiddenWindowFrames(display_bounds, info.frame)) |candidate| {
+            ax.setWindowPosition(info.element, candidate.x, candidate.y) catch continue;
+            const actual = ax.windowFrame(info.element) catch continue;
+            if (isFullyOffscreen(rectFromAx(actual), display_bounds)) {
+                self.workspace_manager.setHidden(window_id, true, geometry);
+                return;
+            }
+        }
+
+        // A few apps refuse off-screen coordinates and clamp a window back to an
+        // edge. Minimize only as a last resort so an inactive workspace never
+        // leaves even one visible pixel behind; it is restored before relayout.
+        if (ax.setWindowMinimized(info.element, true) and ax.isWindowMinimized(info.element)) {
+            self.workspace_manager.setHidden(window_id, true, geometry);
+            return;
+        }
+
+        log.warn("could not fully hide inactive workspace window {d}", .{window_id});
     }
 
     fn hideBounds(self: *EventLoop) state.Rect {
@@ -1015,6 +1033,19 @@ pub const EventLoop = struct {
             return .{ .x = all_bounds.x, .y = all_bounds.y, .width = all_bounds.width, .height = all_bounds.height };
         }
         return self.current_screen;
+    }
+
+    fn restoreMinimizedWindows(self: *EventLoop, space: *state.SpaceState) void {
+        if (self.restoring_workspace == null or self.restoring_workspace.? != self.workspace_manager.active) return;
+
+        var it = space.windows.iterator();
+        while (it.next()) |entry| {
+            const managed = self.workspace_manager.windows.get(entry.key_ptr.*) orelse continue;
+            if (managed.workspace != self.workspace_manager.active or !managed.hidden) continue;
+            if (ax.isWindowMinimized(entry.value_ptr.element)) {
+                _ = ax.setWindowMinimized(entry.value_ptr.element, false);
+            }
+        }
     }
 
     fn ensureActiveWorkspaceFocus(self: *EventLoop) !void {
@@ -1657,37 +1688,46 @@ test "desktop workspace transitions wrap and move focused window" {
     try std.testing.expectEqual(@as(u8, 7), indexed.focused_workspace.?);
 }
 
-test "hidden workspace frame parks at the bottom-right corner" {
+test "hidden workspace frames stay fully left or right of all displays" {
     const screen: state.Rect = .{ .x = 0, .y = 25, .width = 1440, .height = 875 };
     const frame: state.Rect = .{ .x = 100, .y = 200, .width = 800, .height = 600 };
 
-    const hidden = hiddenWindowFrame(screen, frame);
-    try std.testing.expectEqual(frame.width, hidden.width);
-    try std.testing.expectEqual(frame.height, hidden.height);
-    try std.testing.expectEqual(screen.x + screen.width + hidden_window_margin, hidden.x);
-    try std.testing.expectEqual(screen.y + screen.height + hidden_window_margin, hidden.y);
+    for (hiddenWindowFrames(screen, frame)) |hidden| {
+        try std.testing.expectEqual(frame.width, hidden.width);
+        try std.testing.expectEqual(frame.height, hidden.height);
+        try std.testing.expect(isFullyOffscreen(hidden, screen));
+        try std.testing.expect(hidden.y >= screen.y);
+        try std.testing.expect(hidden.y + hidden.height <= screen.y + screen.height);
+    }
 }
 
-test "hidden workspace frame handles negative multi-display origins" {
+test "hidden workspace frames handle negative multi-display origins" {
     const screen: state.Rect = .{ .x = -1920, .y = -120, .width = 4480, .height = 1440 };
     const frame: state.Rect = .{ .x = -1500, .y = 40, .width = 1200, .height = 900 };
 
-    const hidden = hiddenWindowFrame(screen, frame);
-    try std.testing.expectEqual(frame.width, hidden.width);
-    try std.testing.expectEqual(frame.height, hidden.height);
-    try std.testing.expectEqual(screen.x + screen.width + hidden_window_margin, hidden.x);
-    try std.testing.expectEqual(screen.y + screen.height + hidden_window_margin, hidden.y);
+    for (hiddenWindowFrames(screen, frame)) |hidden| {
+        try std.testing.expectEqual(frame.width, hidden.width);
+        try std.testing.expectEqual(frame.height, hidden.height);
+        try std.testing.expect(isFullyOffscreen(hidden, screen));
+    }
 }
 
-test "hidden workspace frame preserves oversized windows" {
+test "hidden workspace frames preserve oversized windows without a visible fragment" {
     const screen: state.Rect = .{ .x = 300, .y = 20, .width = 1000, .height = 700 };
     const frame: state.Rect = .{ .x = 350, .y = 40, .width = 1600, .height = 900 };
 
-    const hidden = hiddenWindowFrame(screen, frame);
-    try std.testing.expectEqual(frame.width, hidden.width);
-    try std.testing.expectEqual(frame.height, hidden.height);
-    try std.testing.expectEqual(screen.x + screen.width + hidden_window_margin, hidden.x);
-    try std.testing.expectEqual(screen.y + screen.height + hidden_window_margin, hidden.y);
+    for (hiddenWindowFrames(screen, frame)) |hidden| {
+        try std.testing.expectEqual(frame.width, hidden.width);
+        try std.testing.expectEqual(frame.height, hidden.height);
+        try std.testing.expect(isFullyOffscreen(hidden, screen));
+    }
+}
+
+test "hidden window verification rejects a clamped bottom-right frame" {
+    const screen: state.Rect = .{ .x = 0, .y = 0, .width = 1440, .height = 900 };
+    const clamped = state.Rect{ .x = 1439, .y = 100, .width = 800, .height = 600 };
+
+    try std.testing.expect(!isFullyOffscreen(clamped, screen));
 }
 
 test "debug windows command reports workspace state without side effects" {
@@ -1700,18 +1740,26 @@ test "debug windows command reports workspace state without side effects" {
     try std.testing.expect(std.mem.indexOf(u8, response, "active_workspace=1") != null);
 }
 
-fn hiddenWindowFrame(screen: state.Rect, frame: state.Rect) state.Rect {
+fn hiddenWindowFrames(screen: state.Rect, frame: state.Rect) [2]state.Rect {
     const width = @max(1, frame.width);
     const height = @max(1, frame.height);
+    const minimum_y = screen.y;
+    const maximum_y = screen.y + @max(0, screen.height - height);
+    const y = @max(minimum_y, @min(frame.y, maximum_y));
     return .{
-        .x = screen.x + screen.width + hidden_window_margin,
-        .y = screen.y + screen.height + hidden_window_margin,
-        .width = width,
-        .height = height,
+        .{ .x = screen.x - width - hidden_window_margin, .y = y, .width = width, .height = height },
+        .{ .x = screen.x + screen.width + hidden_window_margin, .y = y, .width = width, .height = height },
     };
 }
 
-const hidden_window_margin: f64 = 32;
+fn isFullyOffscreen(frame: state.Rect, displays: state.Rect) bool {
+    return frame.x + frame.width <= displays.x or
+        frame.x >= displays.x + displays.width or
+        frame.y + frame.height <= displays.y or
+        frame.y >= displays.y + displays.height;
+}
+
+const hidden_window_margin: f64 = 256;
 
 fn rectCenter(rect: state.Rect) state.Rect {
     return .{
